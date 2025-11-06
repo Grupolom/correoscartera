@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Recordatorios de Pago - Cartera Lomarosa</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>Sistema de Recordatorios de Pago</h1>
+            <p class="subtitle">Cartera Lomarosa</p>
+        </header>
+
+        <!-- PASO 1: CARGAR ARCHIVOS -->
+        <section class="step-section" id="step1">
+            <div class="step-header">
+                <span class="step-number">1</span>
+                <h2>Cargar Archivos Excel</h2>
+            </div>
+
+            <div class="upload-grid">
+                <div class="upload-zone" id="dropZoneTerceros">
+                    <div class="upload-icon">📄</div>
+                    <h3>Archivo Excel 1</h3>
+                    <p>Listado de Terceros con Nombre y Email</p>
+                    <p class="file-hint">.xlsx, .xls</p>
+                    <input type="file" id="fileTerceros" accept=".xlsx,.xls" hidden>
+                    <button class="btn-secondary" onclick="document.getElementById('fileTerceros').click()">
+                        Seleccionar archivo
+                    </button>
+                    <div class="file-info" id="infoTerceros" style="display: none;"></div>
+                </div>
+
+                <div class="upload-zone" id="dropZoneCartera">
+                    <div class="upload-icon">📊</div>
+                    <h3>Archivo Excel 2</h3>
+                    <p>Cartera por Edades (Nombre tercero, Factura, Vencimiento, Saldo)</p>
+                    <p class="file-hint">.xlsx, .xls</p>
+                    <input type="file" id="fileCartera" accept=".xlsx,.xls" hidden>
+                    <button class="btn-secondary" onclick="document.getElementById('fileCartera').click()">
+                        Seleccionar archivo
+                    </button>
+                    <div class="file-info" id="infoCartera" style="display: none;"></div>
+                </div>
+            </div>
+
+            <div class="action-buttons">
+                <button class="btn-primary" id="btnAnalizar" disabled>
+                    Analizar Archivos
+                </button>
+            </div>
+        </section>
+
+        <!-- PASO 2: VISTA PREVIA - VENCIDOS -->
+        <section class="step-section" id="step2" style="display: none;">
+            <div class="step-header">
+                <span class="step-number">2</span>
+                <h2>Vista Previa de Recordatorios</h2>
+            </div>
+
+            <!-- Estadísticas -->
+            <div class="stats-grid">
+                <div class="stat-card stat-warning">
+                    <div class="stat-icon">⏰</div>
+                    <div class="stat-content">
+                        <div class="stat-value" id="statProximos">0</div>
+                        <div class="stat-label">Próximos a vencer</div>
+                        <div class="stat-sublabel">(< 5 días)</div>
+                    </div>
+                </div>
+
+                <div class="stat-card stat-danger">
+                    <div class="stat-icon">🔴</div>
+                    <div class="stat-content">
+                        <div class="stat-value" id="statVencidos">0</div>
+                        <div class="stat-label">Vencidos</div>
+                        <div class="stat-sublabel">(ya pasó fecha)</div>
+                    </div>
+                </div>
+
+                <div class="stat-card stat-primary">
+                    <div class="stat-icon">📧</div>
+                    <div class="stat-content">
+                        <div class="stat-value" id="statTotal">0</div>
+                        <div class="stat-label">Total a enviar</div>
+                        <div class="stat-sublabel">(correos)</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- FILTRO DE BÚSQUEDA GENERAL -->
+            <div style="margin: 20px 0;">
+                <input type="text" id="filterClientes" placeholder="🔍 Buscar cliente..." 
+                       style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px;">
+            </div>
+
+            <!-- ==================== TABLA VENCIDOS ==================== -->
+            <div style="margin-top: 30px;">
+                <h3 style="color: #dc2626; border-bottom: 3px solid #dc2626; padding-bottom: 10px;">
+                    🔴 FACTURAS VENCIDAS (<span id="countVencidosTabla">0</span>)
+                </h3>
+
+                <div style="display: flex; align-items: center; gap: 10px; margin: 15px 0;">
+                    <input type="checkbox" id="selectAllVencidos" checked>
+                    <label for="selectAllVencidos" style="cursor: pointer; font-weight: bold;">Seleccionar todos</label>
+                </div>
+
+                <div class="table-container" style="max-height: 600px; overflow-y: auto;">
+                    <table class="data-table" id="tablaVencidos">
+                        <thead style="position: sticky; top: 0; background: white; z-index: 10;">
+                            <tr>
+                                <th style="width: 40px;"><input type="checkbox" class="check-all-vencidos" checked></th>
+                                <th>Cliente</th>
+                                <th>Email</th>
+                                <th>Vendedor</th>
+                                <th>Vencidas</th>
+                                <th>Detalle</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tbodyVencidos"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- ==================== TABLA PRÓXIMOS ==================== -->
+            <div style="margin-top: 40px;">
+                <h3 style="color: #f59e0b; border-bottom: 3px solid #f59e0b; padding-bottom: 10px;">
+                    🟡 FACTURAS PRÓXIMAS A VENCER (<span id="countProximosTabla">0</span>)
+                </h3>
+
+                <div style="display: flex; align-items: center; gap: 10px; margin: 15px 0;">
+                    <input type="checkbox" id="selectAllProximos" checked>
+                    <label for="selectAllProximos" style="cursor: pointer; font-weight: bold;">Seleccionar todos</label>
+                </div>
+
+                <div class="table-container" style="max-height: 600px; overflow-y: auto;">
+                    <table class="data-table" id="tablaProximos">
+                        <thead style="position: sticky; top: 0; background: white; z-index: 10;">
+                            <tr>
+                                <th style="width: 40px;"><input type="checkbox" class="check-all-proximos" checked></th>
+                                <th>Cliente</th>
+                                <th>Email</th>
+                                <th>Vendedor</th>
+                                <th>Próximas</th>
+                                <th>Detalle</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tbodyProximos"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- PASO 3: ENVIAR CORREOS VENCIDOS -->
+        <section class="step-section" id="step3" style="display: none;">
+            <div class="step-header">
+                <span class="step-number">3</span>
+                <h2>Enviar Correos - FACTURAS VENCIDAS</h2>
+            </div>
+
+            <div class="warning-box">
+                <div class="warning-icon">⚠️</div>
+                <div class="warning-content">
+                    <strong>Importante:</strong> Estás a punto de enviar <span id="countVencidosEnviar">0</span> correos de facturas <strong>VENCIDAS</strong>.
+                    <br>Esta acción no se puede deshacer.
+                </div>
+            </div>
+
+            <div class="action-buttons">
+                <button class="btn-success" id="btnEnviarVencidos" style="background-color: #dc2626;">
+                    <span class="btn-icon">✉️</span>
+                    Enviar Correos Vencidos Ahora
+                </button>
+            </div>
+
+            <div class="progress-area" id="progressAreaVencidos" style="display: none;">
+                <h3>Enviando correos de vencidos...</h3>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFillVencidos"></div>
+                </div>
+                <p class="progress-text" id="progressTextVencidos">Procesando...</p>
+            </div>
+
+            <div class="results-area" id="resultsAreaVencidos" style="display: none;">
+                <h3>Resultados del Envío - Vencidos</h3>
+                <div class="result-summary">
+                    <div class="result-item result-success">
+                        <span class="result-icon">✅</span>
+                        <span class="result-label">Exitosos:</span>
+                        <span class="result-value" id="resultExitososVencidos">0</span>
+                    </div>
+                    <div class="result-item result-error">
+                        <span class="result-icon">❌</span>
+                        <span class="result-label">Fallidos:</span>
+                        <span class="result-value" id="resultFallidosVencidos">0</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- PASO 4: ENVIAR CORREOS PRÓXIMOS -->
+        <section class="step-section" id="step4" style="display: none;">
+            <div class="step-header">
+                <span class="step-number">4</span>
+                <h2>Enviar Correos - FACTURAS PRÓXIMAS A VENCER</h2>
+            </div>
+
+            <div class="warning-box">
+                <div class="warning-icon">⚠️</div>
+                <div class="warning-content">
+                    <strong>Importante:</strong> Estás a punto de enviar <span id="countProximosEnviar">0</span> correos de facturas <strong>PRÓXIMAS A VENCER</strong>.
+                    <br>Esta acción no se puede deshacer.
+                </div>
+            </div>
+
+            <div class="action-buttons">
+                <button class="btn-success" id="btnEnviarProximos" style="background-color: #f59e0b;">
+                    <span class="btn-icon">✉️</span>
+                    Enviar Correos Próximos Ahora
+                </button>
+            </div>
+
+            <div class="progress-area" id="progressAreaProximos" style="display: none;">
+                <h3>Enviando correos de próximos...</h3>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFillProximos"></div>
+                </div>
+                <p class="progress-text" id="progressTextProximos">Procesando...</p>
+            </div>
+
+            <div class="results-area" id="resultsAreaProximos" style="display: none;">
+                <h3>Resultados del Envío - Próximos</h3>
+                <div class="result-summary">
+                    <div class="result-item result-success">
+                        <span class="result-icon">✅</span>
+                        <span class="result-label">Exitosos:</span>
+                        <span class="result-value" id="resultExitososProximos">0</span>
+                    </div>
+                    <div class="result-item result-error">
+                        <span class="result-icon">❌</span>
+                        <span class="result-label">Fallidos:</span>
+                        <span class="result-value" id="resultFallidosProximos">0</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>Sistema de Recordatorios de Pago - Cartera Lomarosa</p>
+            <p class="footer-note">Todo el procesamiento se realiza localmente en tu navegador</p>
+        </footer>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
