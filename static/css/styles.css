@@ -292,6 +292,10 @@ button:disabled {
     border-color: var(--color-primary);
 }
 
+.stat-card.stat-success {
+    border-color: var(--color-success);
+}
+
 .stat-icon {
     font-size: 2.5rem;
 }

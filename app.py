@@ -58,8 +58,16 @@ def normalizar_columna(col):
 # ==========================================
 
 
-def agrupar_recordatorios_por_cliente_y_estado(recordatorios):
-    """Agrupa por cliente, email Y estado - Permite separar clientes con mismo email."""
+def agrupar_recordatorios_por_cliente(recordatorios):
+    """
+    Agrupa recordatorios por cliente+email (sin separar por estado).
+
+    Retorna una estructura unificada con:
+    - facturas_vencidas[]
+    - facturas_proximas[]
+    - facturas_no_vencidas[]
+    - métricas agregadas
+    """
     agrupados = {}
 
     for recordatorio in recordatorios:
@@ -67,8 +75,8 @@ def agrupar_recordatorios_por_cliente_y_estado(recordatorios):
         cliente_email = recordatorio.get("correo_cliente")
         estado = recordatorio.get("estado")
 
-        # Key único: cliente + email + estado (permite separar clientes con mismo email)
-        key = f"{cliente_nombre}|{cliente_email}|{estado}"
+        # Key único: cliente + email (UN SOLO correo por cliente)
+        key = f"{cliente_nombre}|{cliente_email}"
 
         if key not in agrupados:
             agrupados[key] = {
@@ -77,30 +85,62 @@ def agrupar_recordatorios_por_cliente_y_estado(recordatorios):
                 "vendedor": recordatorio.get("vendedor"),
                 "correo_vendedor": recordatorio.get("correo_vendedor"),
                 "local": recordatorio.get("local"),
-                "estado": estado,
-                "facturas": []
+                "facturas_vencidas": [],
+                "facturas_proximas": [],
+                "facturas_no_vencidas": [],
+                "total_facturas": 0,
+                "total_vencidas": 0,
+                "total_proximas": 0,
+                "total_no_vencidas": 0,
+                "total_saldo": 0,
+                "cupo": recordatorio.get("cupo", 0),
+                "cupo_disponible": 0  # Se calcula al final
             }
-        
-        agrupados[key]["facturas"].append({
+
+        # Construir objeto de factura
+        factura_obj = {
             "numero_factura": recordatorio.get("numero_factura"),
             "fecha_emision": recordatorio.get("fecha_emision"),
             "fecha_vencimiento": recordatorio.get("fecha_vencimiento"),
             "dias": recordatorio.get("dias"),
             "saldo": recordatorio.get("saldo"),
             "saldo_numerico": recordatorio.get("saldo_numerico"),
-            "estado": recordatorio.get("estado")
-        })
-    
+            "estado": estado
+        }
+
+        # Clasificar en array correspondiente
+        if estado == "vencido":
+            agrupados[key]["facturas_vencidas"].append(factura_obj)
+            agrupados[key]["total_vencidas"] += 1
+        elif estado == "proximo":
+            agrupados[key]["facturas_proximas"].append(factura_obj)
+            agrupados[key]["total_proximas"] += 1
+        elif estado == "no_vencido":
+            agrupados[key]["facturas_no_vencidas"].append(factura_obj)
+            agrupados[key]["total_no_vencidas"] += 1
+
+        # Actualizar métricas generales
+        agrupados[key]["total_facturas"] += 1
+        agrupados[key]["total_saldo"] += recordatorio.get("saldo_numerico", 0)
+
+    # Calcular cupo_disponible para cada cliente
+    for cliente in agrupados.values():
+        cliente["cupo_disponible"] = cliente["cupo"] - cliente["total_saldo"]
+
     resultado = list(agrupados.values())
 
-    print(f"\n[INFO] Agrupación por cliente + email + estado:")
+    print(f"\n[INFO] Agrupación unificada por cliente + email:")
     print(f"  - Recordatorios individuales (facturas): {len(recordatorios)}")
-    print(f"  - Correos a enviar (clientes separados): {len(resultado)}")
-    vencidos = sum(1 for r in resultado if r['estado'] == 'vencido')
-    proximos = sum(1 for r in resultado if r['estado'] == 'proximo')
-    print(f"    • Vencidos: {vencidos}")
-    print(f"    • Próximos: {proximos}")
-    print(f"  - Nota: Clientes con mismo email se envían por separado")
+    print(f"  - Clientes únicos a notificar: {len(resultado)}")
+
+    total_vencidas = sum(c["total_vencidas"] for c in resultado)
+    total_proximas = sum(c["total_proximas"] for c in resultado)
+    total_no_vencidas = sum(c["total_no_vencidas"] for c in resultado)
+
+    print(f"    • Total facturas vencidas: {total_vencidas}")
+    print(f"    • Total facturas próximas: {total_proximas}")
+    print(f"    • Total facturas no vencidas: {total_no_vencidas}")
+    print(f"  - Nota: Cada cliente recibirá UN SOLO correo con todas sus facturas")
 
     return resultado
 
@@ -189,9 +229,9 @@ def buscar_columna_exacta(df, nombres_esperados):
 def leer_excel_clientes(archivo_bytes):
     """Lee Excel 1 (Clientes y Vendedores) y retorna dos diccionarios."""
     df = pd.read_excel(BytesIO(archivo_bytes))
-    
+
     print(f"[DEBUG] Columnas en Excel 1: {list(df.columns)}")
-    
+
     col_nit = buscar_columna_exacta(df, ["Nit", "NIT"])
     col_cliente = buscar_columna_exacta(df, ["Cliente", "cliente"])
     col_nombre_comercial = buscar_columna_exacta(df, ["Nombre comercial", "Nombrecomercial"])
@@ -199,54 +239,66 @@ def leer_excel_clientes(archivo_bytes):
     col_vendedor = buscar_columna_exacta(df, ["Vendedor", "vendedor"])
     col_correo_vendedor = buscar_columna_exacta(df, ["Correo vendedor", "Correovendedor", "Email vendedor"])
     col_canal = buscar_columna_exacta(df, ["Canal", "canal"])
-    
+    col_cupo = buscar_columna_exacta(df, ["Cupo", "cupo", "Cupo de crédito", "Cupo de credito", "Cupo credito"])
+
     if not col_cliente:
         raise ValueError(f"No se encontró columna 'Cliente' en Excel 1. Columnas: {list(df.columns)}")
     if not col_correo_cliente:
         raise ValueError(f"No se encontró columna 'Correo cliente' en Excel 1. Columnas: {list(df.columns)}")
-    
+
     print(f"[INFO] Columnas detectadas en Excel 1:")
     print(f"  - Cliente: {col_cliente}")
     print(f"  - Correo cliente: {col_correo_cliente}")
     print(f"  - Vendedor: {col_vendedor}")
     print(f"  - Correo vendedor: {col_correo_vendedor}")
-    
+    print(f"  - Cupo: {col_cupo if col_cupo else '❌ NO ENCONTRADO (se usará $0)'}")
+
     dict_clientes = {}
     dict_vendedores = {}
-    
+
     for _, row in df.iterrows():
         cliente = row[col_cliente] if pd.notna(row[col_cliente]) else None
         correo_cliente = row[col_correo_cliente] if pd.notna(row[col_correo_cliente]) else None
-        
+
         if cliente and correo_cliente:
             cliente_norm = normalizar_nombre(cliente)
             if cliente_norm:
+                # Procesar cupo (validar que sea numérico)
+                cupo_valor = 0
+                if col_cupo and pd.notna(row[col_cupo]):
+                    try:
+                        cupo_valor = float(row[col_cupo])
+                    except (ValueError, TypeError):
+                        cupo_valor = 0
+                        print(f"[WARNING] Cupo inválido para cliente '{cliente}': {row[col_cupo]}")
+
                 dict_clientes[cliente_norm] = {
                     "nit": str(row[col_nit]).strip() if col_nit and pd.notna(row[col_nit]) else "N/A",
                     "cliente": str(cliente).strip(),
                     "nombre_comercial": str(row[col_nombre_comercial]).strip() if col_nombre_comercial and pd.notna(row[col_nombre_comercial]) else "N/A",
                     "correo_cliente": str(correo_cliente).strip(),
-                    "canal": str(row[col_canal]).strip() if col_canal and pd.notna(row[col_canal]) else "N/A"
+                    "canal": str(row[col_canal]).strip() if col_canal and pd.notna(row[col_canal]) else "N/A",
+                    "cupo": cupo_valor
                 }
-        
+
         if col_vendedor and col_correo_vendedor:
             vendedor = row[col_vendedor] if pd.notna(row[col_vendedor]) else None
             correo_vendedor = row[col_correo_vendedor] if pd.notna(row[col_correo_vendedor]) else None
-            
+
             if vendedor and correo_vendedor:
                 vendedor_norm = normalizar_nombre(vendedor)
                 if vendedor_norm:
                     dict_vendedores[vendedor_norm] = str(correo_vendedor).strip()
-    
+
     print(f"[INFO] Excel 1 procesado: {len(dict_clientes)} clientes, {len(dict_vendedores)} vendedores")
-    
+
     return dict_clientes, dict_vendedores
 
 
 def leer_excel_cartera(archivo_bytes, dict_clientes, dict_vendedores):
-    """Lee Excel 2 (Cartera) - Calcula días desde FECHAS REALES, NO desde columna Días."""
+    """Lee Excel 2 (Cartera) - Procesa TODAS las facturas (vencidas, próximas y no vencidas)."""
     df = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Cartera por edades", header=11)
-    
+
     col_nombre_tercero = buscar_columna_exacta(df, ["Nombre tercero", "Nombretercero", "Cliente"])
     col_numero_fac = buscar_columna_exacta(df, ["Numero FAC", "NumeroFAC", "Factura", "Numero Factura"])
     col_emision = buscar_columna_exacta(df, ["Emision", "Emisión", "Fecha Emision", "FechaEmision"])
@@ -260,34 +312,38 @@ def leer_excel_cartera(archivo_bytes, dict_clientes, dict_vendedores):
     if not col_numero_fac: columnas_faltantes.append("Numero FAC")
     if not col_vencimiento: columnas_faltantes.append("Vencimiento")
     if not col_saldo: columnas_faltantes.append("Saldo")
-    
+
     if columnas_faltantes:
         raise ValueError(f"Columnas faltantes: {', '.join(columnas_faltantes)}")
-    
+
     print(f"[INFO] Columnas detectadas en Excel 2:")
     print(f"  - Nombre tercero: {col_nombre_tercero}")
     print(f"  - Numero FAC: {col_numero_fac}")
     print(f"  - Vencimiento: {col_vencimiento}")
     print(f"  - Saldo: {col_saldo}")
-    
+
     recordatorios = []
     sin_cliente = 0
-    fuera_ventana = 0
     vencimiento_vacio = 0
     saldo_cero = 0
-    
+
+    # Contadores por categoría
+    vencidas = 0
+    proximas = 0
+    no_vencidas = 0
+
     hoy = date.today()
     print(f"\n[INFO] Fecha de HOY: {hoy.strftime('%d/%m/%Y')}")
     print(f"\n[DEBUG] Clientes NO identificados en Excel 1:")
     print("-" * 80)
-    
+
     for _, row in df.iterrows():
         nombre_tercero = row[col_nombre_tercero] if pd.notna(row[col_nombre_tercero]) else None
         if not nombre_tercero:
             continue
-        
+
         nombre_tercero_norm = normalizar_nombre(nombre_tercero)
-        
+
         if nombre_tercero_norm not in dict_clientes:
             sin_cliente += 1
             print(f"  [{sin_cliente}] NO ENCONTRADO")
@@ -295,28 +351,29 @@ def leer_excel_cartera(archivo_bytes, dict_clientes, dict_vendedores):
             print(f"       Normalizado: '{nombre_tercero_norm}'")
             print()
             continue
-        
+
         cliente_info = dict_clientes[nombre_tercero_norm]
         correo_cliente = cliente_info["correo_cliente"]
         cliente_nombre = cliente_info["cliente"]
-        
+        cupo_cliente = cliente_info.get("cupo", 0)
+
         vendedor = row[col_vendedor] if col_vendedor and pd.notna(row[col_vendedor]) else None
         correo_vendedor = None
-        
+
         if vendedor:
             vendedor_norm = normalizar_nombre(vendedor)
             if vendedor_norm in dict_vendedores:
                 correo_vendedor = dict_vendedores[vendedor_norm]
-        
+
         numero_fac = row[col_numero_fac] if pd.notna(row[col_numero_fac]) else "N/A"
         emision = row[col_emision] if col_emision and pd.notna(row[col_emision]) else None
         vencimiento = row[col_vencimiento] if pd.notna(row[col_vencimiento]) else None
         saldo = row[col_saldo] if pd.notna(row[col_saldo]) else 0
-        
+
         if not pd.notna(vencimiento):
             vencimiento_vacio += 1
             continue
-        
+
         try:
             saldo_float = float(saldo)
             if saldo_float == 0:
@@ -324,37 +381,42 @@ def leer_excel_cartera(archivo_bytes, dict_clientes, dict_vendedores):
                 continue
         except:
             saldo_float = 0
-        
+
         try:
             vencimiento_date = pd.to_datetime(vencimiento).date()
             dias = (vencimiento_date - hoy).days
         except Exception as e:
             print(f"[ERROR] Factura {numero_fac}: Error al calcular días: {e}")
             continue
-        
-        if dias > 5:
-            fuera_ventana += 1
-            continue
-        
+
+        # CAMBIO: NO filtrar por ventana de días, procesar TODAS las facturas
+
         try:
             emision_str = pd.to_datetime(emision).strftime("%d/%m/%Y") if pd.notna(emision) else "N/A"
         except:
             emision_str = str(emision) if emision else "N/A"
-        
+
         vencimiento_str = vencimiento_date.strftime("%d/%m/%Y")
-        
+
         try:
             saldo_formateado = f"${saldo_float:,.0f}"
         except:
             saldo_formateado = "$0"
-        
+
+        # CAMBIO: Clasificar en 3 categorías
         if dias < 0:
             estado = "vencido"
             badge_class = "badge-danger"
-        else:
+            vencidas += 1
+        elif dias <= 5:
             estado = "proximo"
             badge_class = "badge-warning"
-        
+            proximas += 1
+        else:
+            estado = "no_vencido"
+            badge_class = "badge-success"
+            no_vencidas += 1
+
         local = row[col_local] if col_local and pd.notna(row[col_local]) else "N/A"
 
         recordatorios.append({
@@ -370,23 +432,21 @@ def leer_excel_cartera(archivo_bytes, dict_clientes, dict_vendedores):
             "saldo": saldo_formateado,
             "saldo_numerico": saldo_float,
             "estado": estado,
-            "badge_class": badge_class
+            "badge_class": badge_class,
+            "cupo": cupo_cliente
         })
-    
+
     print("-" * 80)
-    
-    vencidos = len([r for r in recordatorios if r["estado"] == "vencido"])
-    proximos = len([r for r in recordatorios if r["estado"] == "proximo"])
-    
+
     print(f"\n[INFO] Excel 2 procesado:")
-    print(f"  - Recordatorios generados: {len(recordatorios)}")
-    print(f"    • Vencidos (días < 0): {vencidos}")
-    print(f"    • Próximos (0 <= días <= 5): {proximos}")
+    print(f"  - Total recordatorios generados: {len(recordatorios)}")
+    print(f"    • Vencidas (días < 0): {vencidas}")
+    print(f"    • Próximas (0 <= días <= 5): {proximas}")
+    print(f"    • No vencidas (días > 5): {no_vencidas}")
     print(f"  - Sin cliente (omitidos): {sin_cliente}")
     print(f"  - Vencimiento vacío: {vencimiento_vacio}")
     print(f"  - Saldo en cero: {saldo_cero}")
-    print(f"  - Fuera de ventana (>5 días): {fuera_ventana}")
-    
+
     return recordatorios
 
 
@@ -475,47 +535,104 @@ def enviar_email_individual(destinatario_principal, destinatario_cc, asunto, cue
 
 
 def generar_html_recordatorio_agrupado(cliente_agrupado):
-    """Genera HTML con MÚLTIPLES facturas en UN SOLO correo."""
+    """Genera HTML con TRES secciones: Vencidas, Próximas y No Vencidas."""
     cliente = cliente_agrupado.get("cliente", "Cliente")
     correo_vendedor = cliente_agrupado.get("correo_vendedor", "N/A")
     vendedor = cliente_agrupado.get("vendedor", "N/A")
-    facturas = cliente_agrupado.get("facturas", [])
-    
+
+    facturas_vencidas = cliente_agrupado.get("facturas_vencidas", [])
+    facturas_proximas = cliente_agrupado.get("facturas_proximas", [])
+    facturas_no_vencidas = cliente_agrupado.get("facturas_no_vencidas", [])
+
+    total_facturas = cliente_agrupado.get("total_facturas", 0)
+    total_vencidas = cliente_agrupado.get("total_vencidas", 0)
+    total_proximas = cliente_agrupado.get("total_proximas", 0)
+    total_no_vencidas = cliente_agrupado.get("total_no_vencidas", 0)
+    total_saldo = cliente_agrupado.get("total_saldo", 0)
+    cupo = cliente_agrupado.get("cupo", 0)
+    cupo_disponible = cliente_agrupado.get("cupo_disponible", 0)
+
     logo_url = "https://images.jumpseller.com/store/lomarosa/store/logo/LR_LogotipoEslogan_CMYK.png?1662998750"
-    
-    limite_tabla = 50
-    facturas_mostradas = facturas[:limite_tabla]
-    facturas_ocultas = len(facturas) - limite_tabla
-    
-    filas_facturas = ""
-    
-    for factura in facturas_mostradas:
-        estado_emoji = "🔴" if factura["estado"] == "vencido" else "🟡"
-        estado_texto = "VENCIDO" if factura["estado"] == "vencido" else "PRÓXIMO"
-        
-        filas_facturas += f"""
-        <tr style="border-bottom: 1px solid #e0e0e0;">
-            <td style="padding: 10px; text-align: center;">{estado_emoji} {estado_texto}</td>
-            <td style="padding: 10px; font-weight: bold;">{factura['numero_factura']}</td>
-            <td style="padding: 10px; text-align: center;">{factura['fecha_emision']}</td>
-            <td style="padding: 10px; text-align: center;">{factura['fecha_vencimiento']}</td>
-            <td style="padding: 10px; text-align: center;">{factura['dias']} días</td>
-            <td style="padding: 10px; text-align: right; color: #dc2626; font-weight: bold;">{factura['saldo']}</td>
-        </tr>
-        """
-    
-    total_saldo_real = sum(f["saldo_numerico"] for f in facturas)
-    total_saldo_formateado = f"${total_saldo_real:,.0f}"
-    
-    advertencia_ocultas = ""
-    if facturas_ocultas > 0:
-        advertencia_ocultas = f"""
-        <div style="background-color: #fff3cd; padding: 15px; margin: 15px 0; border-left: 4px solid #ffc107; border-radius: 4px;">
-            <strong>ℹ️ Información:</strong> Este correo muestra las primeras {limite_tabla} facturas de {len(facturas)} totales.
-            Las restantes {facturas_ocultas} facturas están incluidas en el total.
+
+    # Formatear montos
+    total_saldo_formateado = f"${total_saldo:,.0f}"
+    cupo_formateado = f"${cupo:,.0f}"
+    cupo_disponible_formateado = f"${cupo_disponible:,.0f}"
+
+    # Color para cupo disponible (rojo si es negativo, verde si es positivo)
+    cupo_disponible_color = "#dc2626" if cupo_disponible < 0 else "#10b981"
+    cupo_disponible_emoji = "⚠️" if cupo_disponible < 0 else "✅"
+
+    def generar_tabla_facturas(facturas, titulo, color_bg, emoji):
+        """Helper para generar tabla de facturas por categoría."""
+        if len(facturas) == 0:
+            return ""
+
+        filas = ""
+        for factura in facturas:
+            filas += f"""
+            <tr style="border-bottom: 1px solid #e0e0e0;">
+                <td style="padding: 10px; font-weight: bold;">{factura['numero_factura']}</td>
+                <td style="padding: 10px; text-align: center;">{factura['fecha_emision']}</td>
+                <td style="padding: 10px; text-align: center;">{factura['fecha_vencimiento']}</td>
+                <td style="padding: 10px; text-align: center;">{factura['dias']} días</td>
+                <td style="padding: 10px; text-align: right; font-weight: bold;">{factura['saldo']}</td>
+            </tr>
+            """
+
+        subtotal = sum(f["saldo_numerico"] for f in facturas)
+        subtotal_formateado = f"${subtotal:,.0f}"
+
+        return f"""
+        <div style="margin: 30px 0;">
+            <h3 style="color: {color_bg}; border-bottom: 3px solid {color_bg}; padding-bottom: 10px; margin-bottom: 15px;">
+                {emoji} {titulo} ({len(facturas)})
+            </h3>
+            <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
+                <thead>
+                    <tr style="background-color: {color_bg}; color: white;">
+                        <th style="padding: 12px; text-align: left;">Factura</th>
+                        <th style="padding: 12px; text-align: center;">Emisión</th>
+                        <th style="padding: 12px; text-align: center;">Vencimiento</th>
+                        <th style="padding: 12px; text-align: center;">Días</th>
+                        <th style="padding: 12px; text-align: right;">Saldo</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {filas}
+                    <tr style="background-color: #f8f9fa; font-weight: bold; border-top: 2px solid {color_bg};">
+                        <td colspan="4" style="text-align: right; padding: 12px;">SUBTOTAL:</td>
+                        <td style="text-align: right; padding: 12px;">{subtotal_formateado}</td>
+                    </tr>
+                </tbody>
+            </table>
         </div>
         """
-    
+
+    # Generar secciones solo si hay facturas
+    seccion_vencidas = generar_tabla_facturas(
+        facturas_vencidas,
+        "FACTURAS VENCIDAS",
+        "#dc2626",
+        "🔴"
+    )
+
+    seccion_proximas = generar_tabla_facturas(
+        facturas_proximas,
+        "FACTURAS PRÓXIMAS A VENCER (≤ 5 días)",
+        "#f59e0b",
+        "🟡"
+    )
+
+    seccion_no_vencidas = generar_tabla_facturas(
+        facturas_no_vencidas,
+        "FACTURAS NO VENCIDAS (> 5 días)",
+        "#10b981",
+        "🟢"
+    )
+
+    total_saldo_formateado = f"${total_saldo:,.0f}"
+
     return f"""
     <!DOCTYPE html>
     <html lang="es">
@@ -533,10 +650,6 @@ def generar_html_recordatorio_agrupado(cliente_agrupado):
             .resumen {{display: flex; justify-content: space-around; margin: 20px 0; background-color: #f8f9fa; padding: 20px; border-radius: 8px; flex-wrap: wrap;}}
             .resumen-item {{text-align: center; margin: 10px;}}
             .resumen-numero {{font-size: 32px; font-weight: bold; color: #667eea;}}
-            .tabla-facturas {{width: 100%; border-collapse: collapse; margin: 20px 0;}}
-            .tabla-facturas th {{background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px; text-align: left; font-weight: 600;}}
-            .tabla-facturas td {{padding: 10px 12px; font-size: 14px;}}
-            .total-row {{background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); font-weight: bold; border-top: 3px solid #667eea;}}
             .info-vendedor {{background-color: #e3f2fd; padding: 15px; margin: 20px 0; border-left: 4px solid #2196F3; border-radius: 4px;}}
             .footer {{background-color: #0f172a; color: #94a3b8; padding: 25px; text-align: center; border-radius: 0 0 10px 10px;}}
         </style>
@@ -546,64 +659,61 @@ def generar_html_recordatorio_agrupado(cliente_agrupado):
             <div class="logo">
                 <img src="{logo_url}" alt="Lomarosa">
             </div>
-            
+
             <div class="header">
-                <h1>📧 Recordatorio de Vencimiento de Facturas</h1>
+                <h1>📧 Recordatorio de Estado de Facturas</h1>
                 <p>Cliente: <strong>{cliente}</strong></p>
             </div>
-            
+
             <div class="content">
                 <p>Estimado Cliente <strong>{cliente}</strong>,</p>
-                <p>A continuación presentamos el detalle de sus facturas vencidas y próximas a vencer:</p>
-                
+                <p>A continuación presentamos el estado completo de sus facturas pendientes:</p>
+
                 <div class="resumen">
                     <div class="resumen-item">
-                        <div class="resumen-numero">{len(facturas)}</div>
-                        <div>Facturas Totales</div>
+                        <div class="resumen-numero">{total_facturas}</div>
+                        <div>Total Facturas</div>
                     </div>
                     <div class="resumen-item">
-                        <div class="resumen-numero" style="color: #dc2626;">{sum(1 for f in facturas if f['estado'] == 'vencido')}</div>
-                        <div>Vencidas</div>
+                        <div class="resumen-numero" style="color: #dc2626;">{total_vencidas}</div>
+                        <div>🔴 Vencidas</div>
                     </div>
                     <div class="resumen-item">
-                        <div class="resumen-numero" style="color: #f59e0b;">{sum(1 for f in facturas if f['estado'] == 'proximo')}</div>
-                        <div>Próximas</div>
+                        <div class="resumen-numero" style="color: #f59e0b;">{total_proximas}</div>
+                        <div>🟡 Próximas</div>
+                    </div>
+                    <div class="resumen-item">
+                        <div class="resumen-numero" style="color: #10b981;">{total_no_vencidas}</div>
+                        <div>🟢 No Vencidas</div>
                     </div>
                     <div class="resumen-item">
                         <div class="resumen-numero" style="color: #dc2626;">{total_saldo_formateado}</div>
-                        <div>Saldo Total</div>
+                        <div>💰 Total Cartera</div>
+                    </div>
+                    <div class="resumen-item">
+                        <div class="resumen-numero" style="color: {cupo_disponible_color};">{cupo_disponible_emoji} {cupo_disponible_formateado}</div>
+                        <div>Cupo Disponible</div>
                     </div>
                 </div>
-                
-                {advertencia_ocultas}
-                
-                <table class="tabla-facturas">
-                    <thead>
-                        <tr>
-                            <th>Estado</th>
-                            <th>Factura</th>
-                            <th>Emisión</th>
-                            <th>Vencimiento</th>
-                            <th>Días</th>
-                            <th style="text-align: right;">Saldo</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {filas_facturas}
-                        <tr class="total-row">
-                            <td colspan="5" style="text-align: right; padding: 15px;"><strong>TOTAL GENERAL:</strong></td>
-                            <td style="text-align: right; padding: 15px; font-size: 18px;"><strong>{total_saldo_formateado}</strong></td>
-                        </tr>
-                    </tbody>
-                </table>
-                
+
+                {seccion_vencidas}
+                {seccion_proximas}
+                {seccion_no_vencidas}
+
+                <div style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); padding: 20px; margin: 30px 0; border-radius: 8px; border-top: 4px solid #667eea;">
+                    <h3 style="margin: 0 0 10px 0; text-align: center;">TOTAL GENERAL</h3>
+                    <p style="font-size: 32px; font-weight: bold; text-align: center; margin: 0; color: #667eea;">{total_saldo_formateado}</p>
+                    <p style="text-align: center; margin: 10px 0 0 0; font-size: 14px; color: #666;">Total de {total_facturas} facturas pendientes</p>
+                </div>
+
                 <div class="info-vendedor">
                     <strong>👤 Vendedor asignado:</strong> {vendedor}<br>
                     <strong>📧 Contacto:</strong> {correo_vendedor if correo_vendedor != 'N/A' else 'No asignado'}<br>
-                    <strong>📞 Para consultas:</strong> Comuníquese con su vendedor
+                    <strong>📞 Para consultas:</strong> Comuníquese con su vendedor<br>
+                    <strong>⚠️ Dudas o solicitudes:</strong> Si cree que hay algo equivocado o quiere la cartera completa comuníquese con <a href="mailto:tesoreria@grupolom.com" style="color: #2196F3; text-decoration: none;">tesoreria@grupolom.com</a>
                 </div>
             </div>
-            
+
             <div class="footer">
                 <p><strong>Lomarosa</strong><br>
                 <em>Campo bien hecho, cerdos bien criados</em></p>
@@ -617,20 +727,25 @@ def generar_html_recordatorio_agrupado(cliente_agrupado):
 
 
 def _enviar_lote_agrupado(recordatorios_agrupados):
-    """Envía lote de correos AGRUPADOS."""
+    """Envía lote de correos UNIFICADOS (vencidas + próximas + no vencidas)."""
     resultados = []
-    
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         tareas = {}
-        
+
         for cliente_agrupado in recordatorios_agrupados:
             destinatario_principal = cliente_agrupado.get("correo_cliente", "")
             destinatario_cc = cliente_agrupado.get("correo_vendedor", None)
-            
-            asunto = f"Recordatorio de Vencimiento - {len(cliente_agrupado['facturas'])} facturas - {cliente_agrupado.get('cliente', 'Cliente')}"
+
+            total_facturas = cliente_agrupado.get("total_facturas", 0)
+            total_vencidas = cliente_agrupado.get("total_vencidas", 0)
+            total_proximas = cliente_agrupado.get("total_proximas", 0)
+
+            # Generar asunto descriptivo
+            asunto = f"Estado de Facturas - {total_facturas} facturas - {cliente_agrupado.get('cliente', 'Cliente')}"
             cuerpo_html = generar_html_recordatorio_agrupado(cliente_agrupado)
-            cuerpo_texto = f"Tiene {len(cliente_agrupado['facturas'])} facturas vencidas o próximas a vencer"
-            
+            cuerpo_texto = f"Tiene {total_facturas} facturas pendientes ({total_vencidas} vencidas, {total_proximas} próximas)"
+
             future = executor.submit(
                 enviar_email_individual,
                 destinatario_principal,
@@ -639,9 +754,9 @@ def _enviar_lote_agrupado(recordatorios_agrupados):
                 cuerpo_html,
                 cuerpo_texto
             )
-            
+
             tareas[future] = cliente_agrupado
-        
+
         for future in as_completed(tareas):
             cliente_agrupado = tareas[future]
             try:
@@ -649,7 +764,10 @@ def _enviar_lote_agrupado(recordatorios_agrupados):
                 resultados.append({
                     "destinatario": resultado["destinatario"],
                     "cliente": cliente_agrupado.get("cliente"),
-                    "facturas": len(cliente_agrupado.get("facturas", [])),
+                    "facturas": cliente_agrupado.get("total_facturas", 0),
+                    "vencidas": cliente_agrupado.get("total_vencidas", 0),
+                    "proximas": cliente_agrupado.get("total_proximas", 0),
+                    "no_vencidas": cliente_agrupado.get("total_no_vencidas", 0),
                     "success": resultado["success"],
                     "error": resultado["error"]
                 })
@@ -657,11 +775,14 @@ def _enviar_lote_agrupado(recordatorios_agrupados):
                 resultados.append({
                     "destinatario": cliente_agrupado.get("correo_cliente"),
                     "cliente": cliente_agrupado.get("cliente"),
-                    "facturas": len(cliente_agrupado.get("facturas", [])),
+                    "facturas": cliente_agrupado.get("total_facturas", 0),
+                    "vencidas": cliente_agrupado.get("total_vencidas", 0),
+                    "proximas": cliente_agrupado.get("total_proximas", 0),
+                    "no_vencidas": cliente_agrupado.get("total_no_vencidas", 0),
                     "success": False,
                     "error": str(e)
                 })
-    
+
     return resultados
 
 
@@ -786,29 +907,33 @@ def procesar_excel():
         
         dict_clientes, dict_vendedores = leer_excel_clientes(archivo_clientes)
         recordatorios = leer_excel_cartera(archivo_cartera, dict_clientes, dict_vendedores)
-        
+
         if not recordatorios:
             return jsonify({
                 "success": True,
                 "recordatorios": [],
                 "stats": {
                     "total": 0,
-                    "vencidos": 0,
-                    "proximos": 0
+                    "vencidas": 0,
+                    "proximas": 0,
+                    "no_vencidas": 0
                 },
-                "message": "No se encontraron facturas próximas a vencer o vencidas con email asignado."
+                "message": "No se encontraron facturas con email asignado."
             })
-        
-        vencidos = len([r for r in recordatorios if r["estado"] == "vencido"])
-        proximos = len([r for r in recordatorios if r["estado"] == "proximo"])
-        
+
+        # Contar facturas por categoría
+        vencidas = len([r for r in recordatorios if r["estado"] == "vencido"])
+        proximas = len([r for r in recordatorios if r["estado"] == "proximo"])
+        no_vencidas = len([r for r in recordatorios if r["estado"] == "no_vencido"])
+
         return jsonify({
             "success": True,
             "recordatorios": recordatorios,
             "stats": {
                 "total": len(recordatorios),
-                "vencidos": vencidos,
-                "proximos": proximos
+                "vencidas": vencidas,
+                "proximas": proximas,
+                "no_vencidas": no_vencidas
             }
         })
     
@@ -824,51 +949,51 @@ def procesar_excel():
 
 @app.route("/enviar-correos", methods=["POST"])
 def enviar_correos():
-    """Envía correos AGRUPADOS por cliente Y estado (vencido/próximo)."""
+    """Envía correos UNIFICADOS por cliente (incluye vencidas + próximas + no vencidas)."""
     try:
         datos = request.get_json()
-        
+
         if not datos or "recordatorios" not in datos:
             return jsonify({
                 "success": False,
-                "message": "Datos incorrecto"
+                "message": "Datos incorrectos"
             }), 400
-        
+
         recordatorios = datos["recordatorios"]
-        
+
         if not isinstance(recordatorios, list) or len(recordatorios) == 0:
             return jsonify({
                 "success": False,
                 "message": "Lista vacía"
             }), 400
-        
+
         if not EMAIL_USER or not EMAIL_PASSWORD:
             return jsonify({
                 "success": False,
                 "message": "Credenciales no configuradas"
             }), 500
-        
-        # ← AGRUPAR por cliente + email + estado (separa clientes con mismo email)
-        print("\n[INFO] Agrupando recordatorios por cliente + email + estado...")
-        recordatorios_agrupados = agrupar_recordatorios_por_cliente_y_estado(recordatorios)
-        
-        print(f"\n[INFO] Iniciando envío de {len(recordatorios_agrupados)} correos agrupados...")
-        
+
+        # ← AGRUPAR por cliente + email (UN SOLO correo por cliente)
+        print("\n[INFO] Agrupando recordatorios por cliente + email (unificado)...")
+        recordatorios_agrupados = agrupar_recordatorios_por_cliente(recordatorios)
+
+        print(f"\n[INFO] Iniciando envío de {len(recordatorios_agrupados)} correos unificados...")
+
         # ← ENVIAR LOTE
         resultados = _enviar_lote_agrupado(recordatorios_agrupados)
-        
+
         exitosos = sum(1 for r in resultados if r["success"])
         fallidos = len(resultados) - exitosos
-        
+
         return jsonify({
             "success": True,
-            "message": f"✅ Envío completado: {len(recordatorios_agrupados)} correos consolidados",
+            "message": f"✅ Envío completado: {len(recordatorios_agrupados)} correos unificados",
             "total": len(resultados),
             "exitosos": exitosos,
             "fallidos": fallidos,
             "resultados": resultados
         })
-    
+
     except Exception as e:
         return jsonify({
             "success": False,

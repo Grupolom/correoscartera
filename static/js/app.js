@@ -5,8 +5,7 @@
 let file1Obj = null;
 let file2Obj = null;
 let recordatoriosGlobal = [];
-let clientesVencidos = [];
-let clientesProximos = [];
+let clientesAgrupados = [];
 
 // ==========================================
 // UTILIDADES
@@ -21,12 +20,6 @@ function formatFileSize(bytes) {
 }
 
 function normalizarTexto(texto) {
-    /**
-     * Normaliza texto para comparaciones robustas
-     * - Convierte a lowercase
-     * - Elimina espacios al inicio y final
-     * - Maneja valores null/undefined
-     */
     if (!texto) return "";
     return String(texto).trim().toLowerCase();
 }
@@ -129,34 +122,42 @@ function checkFilesReady() {
 }
 
 // ==========================================
-// AGRUPAR Y SEPARAR POR ESTADO
+// AGRUPAR POR CLIENTE (UNIFICADO)
 // ==========================================
 
-function agruparPorClienteYEstado(recordatorios) {
-    const vencidos = {};
-    const proximos = {};
+function agruparPorCliente(recordatorios) {
+    const agrupados = {};
 
     recordatorios.forEach(r => {
         const email = r.correo_cliente;
         const cliente = r.cliente;
         const estado = r.estado;
-        const target = estado === 'vencido' ? vencidos : proximos;
 
-        // KEY única: cliente + email (permite separar clientes con mismo email)
+        // KEY única: cliente + email
         const key = `${cliente}|${email}`;
 
-        if (!target[key]) {
-            target[key] = {
+        if (!agrupados[key]) {
+            agrupados[key] = {
                 cliente: cliente,
                 correo_cliente: email,
                 vendedor: r.vendedor,
                 correo_vendedor: r.correo_vendedor,
                 local: r.local,
-                facturas: []
+                facturas_vencidas: [],
+                facturas_proximas: [],
+                facturas_no_vencidas: [],
+                total_facturas: 0,
+                total_vencidas: 0,
+                total_proximas: 0,
+                total_no_vencidas: 0,
+                total_saldo: 0,
+                cupo: r.cupo || 0,
+                cupo_disponible: 0
             };
         }
 
-        target[key].facturas.push({
+        // Clasificar factura según estado
+        const factura = {
             numero_factura: r.numero_factura,
             fecha_emision: r.fecha_emision,
             fecha_vencimiento: r.fecha_vencimiento,
@@ -167,35 +168,33 @@ function agruparPorClienteYEstado(recordatorios) {
             correo_cliente: r.correo_cliente,
             correo_vendedor: r.correo_vendedor,
             local: r.local
-        });
+        };
+
+        if (estado === 'vencido') {
+            agrupados[key].facturas_vencidas.push(factura);
+            agrupados[key].total_vencidas += 1;
+        } else if (estado === 'proximo') {
+            agrupados[key].facturas_proximas.push(factura);
+            agrupados[key].total_proximas += 1;
+        } else if (estado === 'no_vencido') {
+            agrupados[key].facturas_no_vencidas.push(factura);
+            agrupados[key].total_no_vencidas += 1;
+        }
+
+        agrupados[key].total_facturas += 1;
+        agrupados[key].total_saldo += r.saldo_numerico || 0;
     });
 
-    // ← DEBUG: Verificar separación de clientes con mismo email
-    const abelVencidos = Object.values(vencidos).filter(c => c.cliente.toLowerCase().includes('abel'));
-    if (abelVencidos.length > 0) {
-        console.log(`🔍 DEBUG - Clientes con "abel" en nombre (VENCIDOS):`);
-        abelVencidos.forEach(c => {
-            console.log(`  Cliente: ${c.cliente}`);
-            console.log(`  Email: ${c.correo_cliente}`);
-            console.log(`  Facturas: ${c.facturas.length}`);
-            console.log(`  Números:`, c.facturas.map(f => f.numero_factura));
-        });
-    }
+    // Calcular cupo_disponible para cada cliente
+    Object.values(agrupados).forEach(cliente => {
+        cliente.cupo_disponible = cliente.cupo - cliente.total_saldo;
+    });
 
-    return {
-        vencidos: Object.values(vencidos).sort((a, b) => {
-            const dateA = new Date(a.facturas[0].fecha_vencimiento.split('/').reverse().join('-'));
-            const dateB = new Date(b.facturas[0].fecha_vencimiento.split('/').reverse().join('-'));
-            return dateA - dateB;
-        }),
-        proximos: Object.values(proximos).sort((a, b) => {
-            const dateA = new Date(a.facturas[0].fecha_vencimiento.split('/').reverse().join('-'));
-            const dateB = new Date(b.facturas[0].fecha_vencimiento.split('/').reverse().join('-'));
-            return dateA - dateB;
-        })
-    };
+    return Object.values(agrupados).sort((a, b) => {
+        // Ordenar por total de vencidas (descendente)
+        return b.total_vencidas - a.total_vencidas;
+    });
 }
-
 
 // ==========================================
 // ANALIZAR ARCHIVOS
@@ -230,22 +229,20 @@ async function analizarArchivos() {
         recordatoriosGlobal = resultado.recordatorios || [];
 
         if (recordatoriosGlobal.length === 0) {
-            alert("No se encontraron facturas próximas a vencer o vencidas con email asignado.");
+            alert("No se encontraron facturas con email asignado.");
             btnAnalizar.disabled = false;
             btnAnalizar.textContent = "Analizar Archivos";
             return;
         }
 
-        const agrupado = agruparPorClienteYEstado(recordatoriosGlobal);
-        clientesVencidos = agrupado.vencidos;
-        clientesProximos = agrupado.proximos;
+        // Agrupar clientes de forma unificada
+        clientesAgrupados = agruparPorCliente(recordatoriosGlobal);
 
-        renderTablas();
+        renderTablaUnificada();
         renderEstadisticas(resultado.stats);
 
         document.getElementById("step2").style.display = "block";
         document.getElementById("step3").style.display = "block";
-        document.getElementById("step4").style.display = "block";
 
         document.getElementById("step2").scrollIntoView({ behavior: "smooth" });
 
@@ -261,104 +258,138 @@ async function analizarArchivos() {
 }
 
 // ==========================================
-// RENDER DE TABLAS CON EXPANDIBLES
+// RENDER DE TABLA UNIFICADA
 // ==========================================
 
-function renderTablas() {
+function renderTablaUnificada() {
     const filterValue = document.getElementById("filterClientes").value.toLowerCase();
-    
-    // Tablas Vencidos
-    renderTablaEstado('vencidos', clientesVencidos, filterValue);
-    
-    // Tabla Próximos
-    renderTablaEstado('proximos', clientesProximos, filterValue);
-
-    // Actualizar conteos
-    document.getElementById("countVencidosTabla").textContent = clientesVencidos.filter(c => 
-        c.cliente.toLowerCase().includes(filterValue)
-    ).length;
-    
-    document.getElementById("countProximosTabla").textContent = clientesProximos.filter(c => 
-        c.cliente.toLowerCase().includes(filterValue)
-    ).length;
-
-    actualizarConteoEnvio();
-}
-
-function renderTablaEstado(estado, clientes, filterValue = '') {
-    const tableId = estado === 'vencidos' ? 'tablaVencidos' : 'tablaProximos';
-    const tbody = document.getElementById(`tbody${estado.charAt(0).toUpperCase() + estado.slice(1)}`);
+    const tbody = document.getElementById("tbodyClientes");
     tbody.innerHTML = '';
 
-    const filtrados = clientes.filter(c => c.cliente.toLowerCase().includes(filterValue));
+    const filtrados = clientesAgrupados.filter(c =>
+        c.cliente.toLowerCase().includes(filterValue)
+    );
+
+    document.getElementById("countClientesTabla").textContent = filtrados.length;
 
     filtrados.forEach((cliente, idx) => {
-        // KEY única para identificar cada cliente (incluye nombre para separar clientes con mismo email)
         const uniqueKey = `${cliente.cliente}|${cliente.correo_cliente}`;
+
+        // Formatear montos
+        const totalCarteraFormat = `$${cliente.total_saldo.toLocaleString('es-CO', {maximumFractionDigits: 0})}`;
+        const cupoDisponibleFormat = `$${cliente.cupo_disponible.toLocaleString('es-CO', {maximumFractionDigits: 0})}`;
+        const cupoDisponibleColor = cliente.cupo_disponible < 0 ? '#dc2626' : '#10b981';
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td>
-                <input type="checkbox" class="check-${estado}" value="${uniqueKey}" data-cliente="${cliente.cliente}" data-email="${cliente.correo_cliente}" checked>
+                <input type="checkbox" class="check-cliente" value="${uniqueKey}"
+                       data-cliente="${cliente.cliente}"
+                       data-email="${cliente.correo_cliente}" checked>
             </td>
             <td><strong>${cliente.cliente}</strong></td>
             <td>${cliente.correo_cliente}</td>
             <td>${cliente.vendedor}</td>
-            <td style="text-align: center; font-weight: bold;">${cliente.facturas.length}</td>
+            <td style="text-align: center; font-weight: bold;">${cliente.total_facturas}</td>
+            <td style="text-align: center; color: #dc2626; font-weight: bold;">${cliente.total_vencidas}</td>
+            <td style="text-align: center; color: #f59e0b; font-weight: bold;">${cliente.total_proximas}</td>
+            <td style="text-align: center; color: #10b981; font-weight: bold;">${cliente.total_no_vencidas}</td>
+            <td style="text-align: right; font-weight: bold; color: #dc2626;">${totalCarteraFormat}</td>
+            <td style="text-align: right; font-weight: bold; color: ${cupoDisponibleColor};">${cupoDisponibleFormat}</td>
             <td>
-                <button class="btn-expand" onclick="toggleFacturas('${estado}', ${idx})">
-                    <span id="expand-${estado}-${idx}">▼</span> Ver Facturas
+                <button class="btn-expand" onclick="toggleFacturasCliente(${idx})">
+                    <span id="expand-cliente-${idx}">▼</span> Ver Facturas
                 </button>
             </td>
         `;
 
         tbody.appendChild(tr);
 
-        // Fila de detalle CON MÁS DATOS
+        // Fila de detalle con TRES sub-tablas
         const detailRow = document.createElement('tr');
-        detailRow.id = `detail-${estado}-${idx}`;
+        detailRow.id = `detail-cliente-${idx}`;
         detailRow.style.display = 'none';
-        
-        const facturasList = cliente.facturas.map(f => `
-            <div style="display: grid; grid-template-columns: 100px 100px 100px 120px 80px 180px 180px 100px; gap: 10px; padding: 10px 0; border-bottom: 1px solid #eee; font-size: 13px;">
-                <div><strong>${f.numero_factura}</strong></div>
-                <div>${f.fecha_emision}</div>
-                <div>${f.fecha_vencimiento}</div>
-                <div style="text-align: right;">${f.saldo}</div>
-                <div>${f.dias} días</div>
-                <div>${f.correo_cliente || cliente.correo_cliente}</div>
-                <div>${f.correo_vendedor || cliente.correo_vendedor}</div>
-                <div>${f.local || cliente.local}</div>
-            </div>
-        `).join('');
+
+        // Generar sub-tabla de vencidas
+        const subTablaVencidas = generarSubTabla(
+            cliente.facturas_vencidas,
+            "VENCIDAS",
+            "#dc2626",
+            "🔴"
+        );
+
+        // Generar sub-tabla de próximas
+        const subTablaProximas = generarSubTabla(
+            cliente.facturas_proximas,
+            "PRÓXIMAS (≤ 5 días)",
+            "#f59e0b",
+            "🟡"
+        );
+
+        // Generar sub-tabla de no vencidas
+        const subTablaNoVencidas = generarSubTabla(
+            cliente.facturas_no_vencidas,
+            "NO VENCIDAS (> 5 días)",
+            "#10b981",
+            "🟢"
+        );
 
         detailRow.innerHTML = `
-            <td colspan="6" style="padding: 20px;">
-                <div style="background: #f8f9fa; padding: 15px; border-radius: 8px;">
-                    <div style="display: grid; grid-template-columns: 100px 100px 100px 120px 80px 180px 180px 100px; gap: 10px; margin-bottom: 10px; font-weight: bold; color: #666; font-size: 12px;">
-                        <div>Factura</div>
-                        <div>Emisión</div>
-                        <div>Vencimiento</div>
-                        <div style="text-align: right;">Saldo</div>
-                        <div>Días</div>
-                        <div>Email Cliente</div>
-                        <div>Email Vendedor</div>
-                        <div>Local</div>
-                    </div>
-                    ${facturasList}
+            <td colspan="11" style="padding: 20px; background-color: #f8f9fa;">
+                <div style="display: grid; gap: 20px;">
+                    ${subTablaVencidas}
+                    ${subTablaProximas}
+                    ${subTablaNoVencidas}
                 </div>
             </td>
         `;
 
         tbody.appendChild(detailRow);
     });
+
+    actualizarConteoEnvio();
 }
 
+function generarSubTabla(facturas, titulo, colorBg, emoji) {
+    if (!facturas || facturas.length === 0) {
+        return '';
+    }
 
-function toggleFacturas(estado, idx) {
-    const detailRow = document.getElementById(`detail-${estado}-${idx}`);
-    const expandIcon = document.getElementById(`expand-${estado}-${idx}`);
-    
+    const filas = facturas.map(f => `
+        <div style="display: grid; grid-template-columns: 120px 100px 100px 80px 150px 150px 100px; gap: 10px; padding: 10px 0; border-bottom: 1px solid #eee; font-size: 13px;">
+            <div><strong>${f.numero_factura}</strong></div>
+            <div>${f.fecha_emision}</div>
+            <div>${f.fecha_vencimiento}</div>
+            <div>${f.dias} días</div>
+            <div style="text-align: right; font-weight: bold;">${f.saldo}</div>
+            <div>${f.correo_cliente}</div>
+            <div>${f.local || 'N/A'}</div>
+        </div>
+    `).join('');
+
+    return `
+        <div style="border: 2px solid ${colorBg}; border-radius: 8px; padding: 15px; background: white;">
+            <h4 style="margin: 0 0 15px 0; color: ${colorBg}; border-bottom: 2px solid ${colorBg}; padding-bottom: 8px;">
+                ${emoji} ${titulo} (${facturas.length})
+            </h4>
+            <div style="display: grid; grid-template-columns: 120px 100px 100px 80px 150px 150px 100px; gap: 10px; margin-bottom: 10px; font-weight: bold; color: #666; font-size: 12px;">
+                <div>Factura</div>
+                <div>Emisión</div>
+                <div>Vencimiento</div>
+                <div>Días</div>
+                <div style="text-align: right;">Saldo</div>
+                <div>Email</div>
+                <div>Local</div>
+            </div>
+            ${filas}
+        </div>
+    `;
+}
+
+function toggleFacturasCliente(idx) {
+    const detailRow = document.getElementById(`detail-cliente-${idx}`);
+    const expandIcon = document.getElementById(`expand-cliente-${idx}`);
+
     if (detailRow.style.display === 'none') {
         detailRow.style.display = 'table-row';
         expandIcon.textContent = '▲';
@@ -369,17 +400,15 @@ function toggleFacturas(estado, idx) {
 }
 
 function renderEstadisticas(stats) {
-    document.getElementById("statProximos").textContent = stats.proximos || 0;
-    document.getElementById("statVencidos").textContent = stats.vencidos || 0;
-    document.getElementById("statTotal").textContent = (stats.vencidos + stats.proximos) || 0;
+    document.getElementById("statVencidas").textContent = stats.vencidas || 0;
+    document.getElementById("statProximas").textContent = stats.proximas || 0;
+    document.getElementById("statNoVencidas").textContent = stats.no_vencidas || 0;
+    document.getElementById("statTotal").textContent = stats.total || 0;
 }
 
 function actualizarConteoEnvio() {
-    const vencidosSeleccionados = document.querySelectorAll('.check-vencidos:checked').length;
-    const proximosSeleccionados = document.querySelectorAll('.check-proximos:checked').length;
-    
-    document.getElementById("countVencidosEnviar").textContent = vencidosSeleccionados;
-    document.getElementById("countProximosEnviar").textContent = proximosSeleccionados;
+    const clientesSeleccionados = document.querySelectorAll('.check-cliente:checked').length;
+    document.getElementById("countClientesEnviar").textContent = clientesSeleccionados;
 }
 
 // ==========================================
@@ -393,129 +422,85 @@ document.addEventListener("DOMContentLoaded", () => {
     const filterInput = document.getElementById("filterClientes");
     if (filterInput) {
         filterInput.addEventListener("input", () => {
-            renderTablas();
+            renderTablaUnificada();
         });
     }
 
-    // Checkboxes "Seleccionar todos"
-    const selectAllVencidos = document.getElementById("selectAllVencidos");
-    const selectAllProximos = document.getElementById("selectAllProximos");
-
-    if (selectAllVencidos) {
-        selectAllVencidos.addEventListener("change", (e) => {
-            document.querySelectorAll('.check-vencidos').forEach(cb => cb.checked = e.target.checked);
-            actualizarConteoEnvio();
-        });
-    }
-
-    if (selectAllProximos) {
-        selectAllProximos.addEventListener("change", (e) => {
-            document.querySelectorAll('.check-proximos').forEach(cb => cb.checked = e.target.checked);
+    // Checkbox "Seleccionar todos"
+    const selectAllClientes = document.getElementById("selectAllClientes");
+    if (selectAllClientes) {
+        selectAllClientes.addEventListener("change", (e) => {
+            document.querySelectorAll('.check-cliente').forEach(cb => cb.checked = e.target.checked);
             actualizarConteoEnvio();
         });
     }
 
     // Cambio en checkboxes individuales
     document.addEventListener("change", (e) => {
-        if (e.target.classList.contains('check-vencidos') || e.target.classList.contains('check-proximos')) {
+        if (e.target.classList.contains('check-cliente')) {
             actualizarConteoEnvio();
         }
     });
 
     document.getElementById("btnAnalizar").addEventListener("click", analizarArchivos);
-    document.getElementById("btnEnviarVencidos").addEventListener("click", () => enviarCorreosEstado('vencidos'));
-    document.getElementById("btnEnviarProximos").addEventListener("click", () => enviarCorreosEstado('proximos'));
+    document.getElementById("btnEnviarCorreos").addEventListener("click", enviarCorreos);
 
     console.log("✅ App inicializada");
 });
 
 // ==========================================
-// ENVÍO DE CORREOS POR ESTADO
+// ENVÍO DE CORREOS UNIFICADO
 // ==========================================
 
-async function enviarCorreosEstado(estado) {
-    const checkboxes = document.querySelectorAll(`.check-${estado}:checked`);
+async function enviarCorreos() {
+    const checkboxes = document.querySelectorAll('.check-cliente:checked');
 
-    // Normalizar estado: "vencidos" → "vencido", "proximos" → "proximo"
-    const estadoNormalizado = estado === 'vencidos' ? 'vencido' : (estado === 'proximos' ? 'proximo' : estado);
+    if (checkboxes.length === 0) {
+        alert("No hay clientes seleccionados");
+        return;
+    }
 
-    // Extraer clientes seleccionados usando data-attributes (más robusto que split)
+    const confirmacion = confirm(
+        `¿Enviar ${checkboxes.length} correos unificados?\n\n` +
+        `Cada cliente recibirá UN SOLO correo con todas sus facturas (vencidas, próximas y no vencidas).`
+    );
+
+    if (!confirmacion) {
+        return;
+    }
+
+    // Extraer clientes seleccionados
     const clientesSeleccionados = Array.from(checkboxes).map(cb => ({
         cliente: cb.getAttribute('data-cliente'),
         email: cb.getAttribute('data-email')
     }));
 
-    console.log(`\n📧 ===== INICIO ENVÍO CORREOS ${estado.toUpperCase()} =====`);
-    console.log(`Estado recibido: "${estado}" → Estado normalizado: "${estadoNormalizado}"`);
-    console.log(`Checkboxes seleccionados: ${checkboxes.length}`);
-    console.log(`Clientes seleccionados:`, clientesSeleccionados);
+    console.log(`📧 Enviando correos a ${clientesSeleccionados.length} clientes...`);
 
-    if (clientesSeleccionados.length === 0) {
-        alert(`No hay clientes seleccionados para ${estado === 'vencidos' ? 'vencidos' : 'próximos'}`);
-        return;
-    }
-
-    // Filtrar recordatorios por cliente Y email usando comparación normalizada
+    // Filtrar recordatorios para clientes seleccionados
     const recordatoriosFiltrados = recordatoriosGlobal.filter(r => {
-        if (r.estado !== estadoNormalizado) return false;
-
-        const match = clientesSeleccionados.some(cs => {
+        return clientesSeleccionados.some(cs => {
             const clienteMatch = normalizarTexto(cs.cliente) === normalizarTexto(r.cliente);
             const emailMatch = normalizarTexto(cs.email) === normalizarTexto(r.correo_cliente);
             return clienteMatch && emailMatch;
         });
-
-        return match;
     });
 
-    console.log(`\n🔍 DEBUG FILTRADO:`);
-    console.log(`  - Total recordatorios globales: ${recordatoriosGlobal.length}`);
-    console.log(`  - Recordatorios con estado "${estadoNormalizado}": ${recordatoriosGlobal.filter(r => r.estado === estadoNormalizado).length}`);
-    console.log(`  - Recordatorios filtrados para envío: ${recordatoriosFiltrados.length}`);
+    console.log(`Total recordatorios a enviar: ${recordatoriosFiltrados.length}`);
 
-    if (recordatoriosFiltrados.length === 0) {
-        console.error(`❌ ERROR: No se encontraron recordatorios para los clientes seleccionados`);
-        console.log(`\n🔍 DIAGNÓSTICO - Comparando cada cliente seleccionado:`);
-
-        clientesSeleccionados.forEach(cs => {
-            const recordatoriosCliente = recordatoriosGlobal.filter(r =>
-                normalizarTexto(r.cliente) === normalizarTexto(cs.cliente) &&
-                normalizarTexto(r.correo_cliente) === normalizarTexto(cs.email)
-            );
-            const recordatoriosEstado = recordatoriosCliente.filter(r => r.estado === estadoNormalizado);
-            console.log(`  Cliente: "${cs.cliente}" | Email: "${cs.email}"`);
-            console.log(`    → Recordatorios totales: ${recordatoriosCliente.length}`);
-            console.log(`    → Recordatorios con estado "${estadoNormalizado}": ${recordatoriosEstado.length}`);
-            console.log(`    → Estados encontrados:`, [...new Set(recordatoriosCliente.map(r => r.estado))]);
-        });
-
-        alert("No hay recordatorios para enviar. Revisa la consola para más detalles.");
-        return;
-    }
-
-    console.log(`✅ Recordatorios listos para enviar:`, recordatoriosFiltrados);
-
-    const confirmacion = confirm(`¿Enviar ${clientesSeleccionados.length} correos de ${estado === 'vencidos' ? 'facturas vencidas' : 'facturas próximas'}?`);
-    if (!confirmacion) {
-        console.log(`⚠️ Envío cancelado por el usuario`);
-        return;
-    }
-
-    const btn = document.getElementById(`btnEnviar${estado.charAt(0).toUpperCase() + estado.slice(1)}`);
+    const btn = document.getElementById("btnEnviarCorreos");
     btn.disabled = true;
     btn.textContent = "Enviando...";
 
-    const progressArea = document.getElementById(`progressArea${estado.charAt(0).toUpperCase() + estado.slice(1)}`);
+    const progressArea = document.getElementById("progressArea");
     progressArea.style.display = "block";
 
-    const progressFill = document.getElementById(`progressFill${estado.charAt(0).toUpperCase() + estado.slice(1)}`);
-    const progressText = document.getElementById(`progressText${estado.charAt(0).toUpperCase() + estado.slice(1)}`);
+    const progressFill = document.getElementById("progressFill");
+    const progressText = document.getElementById("progressText");
 
     try {
         progressFill.style.width = "20%";
         progressText.textContent = `Enviando ${clientesSeleccionados.length} correos...`;
-
-        console.log(`\n📤 Enviando ${recordatoriosFiltrados.length} recordatorios al servidor...`);
 
         const response = await fetch("/enviar-correos", {
             method: "POST",
@@ -525,26 +510,23 @@ async function enviarCorreosEstado(estado) {
 
         if (!response.ok) {
             const errorData = await response.json();
-            console.error(`❌ Error del servidor:`, errorData);
             throw new Error(errorData.message || "Error en servidor");
         }
 
         const resultado = await response.json();
 
-        console.log(`\n✅ RESULTADO DEL ENVÍO:`);
-        console.log(`  - Total correos enviados: ${resultado.total}`);
+        console.log(`✅ Envío completado:`);
+        console.log(`  - Total: ${resultado.total}`);
         console.log(`  - Exitosos: ${resultado.exitosos}`);
         console.log(`  - Fallidos: ${resultado.fallidos}`);
-        console.log(`  - Detalles:`, resultado.resultados);
-        console.log(`\n===== FIN ENVÍO CORREOS ${estado.toUpperCase()} =====\n`);
 
         progressFill.style.width = "100%";
         progressText.textContent = "✅ Envío completado";
 
-        document.getElementById(`resultExitosos${estado.charAt(0).toUpperCase() + estado.slice(1)}`).textContent = resultado.exitosos;
-        document.getElementById(`resultFallidos${estado.charAt(0).toUpperCase() + estado.slice(1)}`).textContent = resultado.fallidos;
+        document.getElementById("resultExitosos").textContent = resultado.exitosos;
+        document.getElementById("resultFallidos").textContent = resultado.fallidos;
 
-        document.getElementById(`resultsArea${estado.charAt(0).toUpperCase() + estado.slice(1)}`).style.display = "block";
+        document.getElementById("resultsArea").style.display = "block";
 
         setTimeout(() => progressArea.style.display = "none", 2000);
 
@@ -554,6 +536,6 @@ async function enviarCorreosEstado(estado) {
         progressText.textContent = "❌ Error en envío";
     } finally {
         btn.disabled = false;
-        btn.textContent = `Enviar Correos ${estado.charAt(0).toUpperCase() + estado.slice(1)}`;
+        btn.textContent = "Enviar Correos";
     }
 }
