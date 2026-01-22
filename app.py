@@ -54,6 +54,83 @@ def normalizar_columna(col):
 
 
 # ==========================================
+# FUNCIONES DE FECHA CARTERA Y CIERRE TRIMESTRAL
+# ==========================================
+
+
+def extraer_fecha_cartera(archivo_bytes):
+    """
+    Extrae la fecha de cartera del Excel buscando 'Fecha Cartera' en columna E
+    y tomando el valor de la celda a su derecha (columna F).
+    """
+    try:
+        # Leer el Excel sin header para buscar en todas las filas
+        df_raw = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Cartera por edades", header=None)
+
+        # Buscar "Fecha Cartera" en columna E (índice 4)
+        fecha_cartera = None
+        for idx, valor in enumerate(df_raw.iloc[:, 4]):  # Columna E = índice 4
+            if pd.notna(valor) and "fecha cartera" in str(valor).lower():
+                # Tomar el valor de la celda a la derecha (columna F = índice 5)
+                fecha_cartera_raw = df_raw.iloc[idx, 5]
+                if pd.notna(fecha_cartera_raw):
+                    try:
+                        fecha_cartera = pd.to_datetime(fecha_cartera_raw).date()
+                        print(f"[INFO] Fecha Cartera encontrada: {fecha_cartera.strftime('%d/%m/%Y')}")
+                    except:
+                        fecha_cartera = None
+                        print(f"[WARNING] No se pudo parsear fecha cartera: {fecha_cartera_raw}")
+                break
+
+        if not fecha_cartera:
+            print("[WARNING] No se encontró 'Fecha Cartera' en columna E del Excel")
+            fecha_cartera = date.today()
+
+        return fecha_cartera
+
+    except Exception as e:
+        print(f"[ERROR] Error al extraer fecha cartera: {e}")
+        return date.today()
+
+
+def detectar_cierre_trimestral(fecha_cartera):
+    """
+    Detecta si la fecha corresponde a un cierre trimestral.
+    Retorna dict con información del cierre o None si no aplica.
+
+    Cierres: días 29, 30, 31 de Marzo, Junio, Septiembre, Diciembre
+    """
+    if not fecha_cartera:
+        return None
+
+    mes = fecha_cartera.month
+    dia = fecha_cartera.day
+
+    # Meses de cierre trimestral
+    meses_cierre = {
+        3: "trimestral",   # Marzo
+        6: "trimestral",   # Junio
+        9: "trimestral",   # Septiembre
+        12: "anual"        # Diciembre
+    }
+
+    # Días válidos para cierre
+    dias_cierre = [29, 30, 31]
+
+    if mes in meses_cierre and dia in dias_cierre:
+        tipo_cierre = meses_cierre[mes]
+        return {
+            "es_cierre": True,
+            "tipo": tipo_cierre,  # "trimestral" o "anual"
+            "fecha": fecha_cartera,
+            "fecha_formateada": fecha_cartera.strftime("%d/%m/%Y"),
+            "mensaje_tipo": "Cierre anual" if tipo_cierre == "anual" else "Cierre trimestral"
+        }
+
+    return None
+
+
+# ==========================================
 # FUNCIONES DE AGRUPACIÓN
 # ==========================================
 
@@ -159,40 +236,61 @@ def dividir_en_lotes(recordatorios, limite=450):
 # ==========================================
 
 
-def detectar_tipo_excel(df):
+def detectar_fila_header_cartera(archivo_bytes):
+    """
+    Detecta dinámicamente en qué fila está el header de la tabla de cartera.
+    Busca la fila que contenga 'Nombre tercero' en la primera columna.
+    Retorna el índice de la fila (para usar como header en pd.read_excel).
+    """
+    try:
+        df_raw = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Cartera por edades", header=None, nrows=20)
+
+        for idx, valor in enumerate(df_raw.iloc[:, 0]):  # Columna A
+            if pd.notna(valor) and "nombre tercero" in str(valor).lower():
+                print(f"[DEBUG] Header de cartera encontrado en fila {idx}")
+                return idx
+
+        print("[DEBUG] No se encontró 'Nombre tercero' en columna A, usando default 11")
+        return 11  # Default antiguo
+    except Exception as e:
+        print(f"[DEBUG] Error buscando header: {e}")
+        return 11
+
+
+def detectar_tipo_excel(df, debug_info=""):
     """Detecta si el Excel es Excel 1 (Clientes) o Excel 2 (Cartera) según sus columnas."""
     columnas_lower = [normalizar_columna(col) for col in df.columns]
     columnas_str = " ".join(columnas_lower)
-    
+
     print("=" * 60)
-    print(f"[DEBUG] Detectando tipo de Excel...")
+    print(f"[DEBUG] Detectando tipo de Excel {debug_info}...")
     print(f"[DEBUG] Total columnas: {len(columnas_lower)}")
     print(f"[DEBUG] Primeras 15 columnas: {columnas_lower[:15]}")
     print("=" * 60)
-    
+
     tiene_nit = "nit" in columnas_str
     tiene_cliente = "cliente" in columnas_str
     tiene_correo_cliente = "correo cliente" in columnas_str or "correocliente" in columnas_str.replace(' ', '')
-    
+
     tiene_nombre_tercero = "nombre tercero" in columnas_str or "nombretercero" in columnas_str.replace(' ', '')
     tiene_numero_fac = "numero fac" in columnas_str or "numerofac" in columnas_str.replace(' ', '') or " fac " in columnas_str
     tiene_vencimiento = "vencimiento" in columnas_str
     tiene_dias = "dias" in columnas_str or "días" in columnas_str
     tiene_saldo = "saldo" in columnas_str
-    
-    print(f"[DEBUG] Verificación Excel 1:")
+
+    print(f"[DEBUG] Verificación Excel CLIENTES:")
     print(f"  - tiene_nit: {tiene_nit}")
     print(f"  - tiene_cliente: {tiene_cliente}")
     print(f"  - tiene_correo_cliente: {tiene_correo_cliente}")
     print()
-    print(f"[DEBUG] Verificación Excel 2:")
+    print(f"[DEBUG] Verificación Excel CARTERA:")
     print(f"  - tiene_nombre_tercero: {tiene_nombre_tercero}")
     print(f"  - tiene_numero_fac: {tiene_numero_fac}")
     print(f"  - tiene_vencimiento: {tiene_vencimiento}")
     print(f"  - tiene_dias: {tiene_dias}")
     print(f"  - tiene_saldo: {tiene_saldo}")
     print("=" * 60)
-    
+
     if tiene_nit and tiene_cliente and tiene_correo_cliente:
         print("[DEBUG] ✓ Detectado como: CLIENTES")
         return "clientes"
@@ -201,6 +299,12 @@ def detectar_tipo_excel(df):
         return "cartera"
     else:
         print("[DEBUG] ✗ NO DETECTADO (devolviendo None)")
+        print(f"[DEBUG] Columnas faltantes para CARTERA:")
+        if not tiene_nombre_tercero: print("  - FALTA: nombre tercero")
+        if not tiene_numero_fac: print("  - FALTA: numero fac")
+        if not tiene_vencimiento: print("  - FALTA: vencimiento")
+        if not tiene_dias: print("  - FALTA: dias")
+        if not tiene_saldo: print("  - FALTA: saldo")
         return None
 
 
@@ -297,7 +401,10 @@ def leer_excel_clientes(archivo_bytes):
 
 def leer_excel_cartera(archivo_bytes, dict_clientes, dict_vendedores):
     """Lee Excel 2 (Cartera) - Procesa TODAS las facturas (vencidas, próximas y no vencidas)."""
-    df = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Cartera por edades", header=11)
+    # Detectar dinámicamente la fila del header
+    header_row = detectar_fila_header_cartera(archivo_bytes)
+    print(f"[INFO] Leyendo Excel Cartera con header en fila {header_row}")
+    df = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Cartera por edades", header=header_row)
 
     col_nombre_tercero = buscar_columna_exacta(df, ["Nombre tercero", "Nombretercero", "Cliente"])
     col_numero_fac = buscar_columna_exacta(df, ["Numero FAC", "NumeroFAC", "Factura", "Numero Factura"])
@@ -534,11 +641,14 @@ def enviar_email_individual(destinatario_principal, destinatario_cc, asunto, cue
         }
 
 
-def generar_html_recordatorio_agrupado(cliente_agrupado):
+def generar_html_recordatorio_agrupado(cliente_agrupado, fecha_cartera=None, info_cierre=None, incluir_mensaje_cierre=True):
     """Genera HTML con TRES secciones: Vencidas, Próximas y No Vencidas."""
     cliente = cliente_agrupado.get("cliente", "Cliente")
     correo_vendedor = cliente_agrupado.get("correo_vendedor", "N/A")
     vendedor = cliente_agrupado.get("vendedor", "N/A")
+
+    # Formatear fecha cartera para el título
+    fecha_titulo = fecha_cartera if fecha_cartera else date.today().strftime("%d/%m/%Y")
 
     facturas_vencidas = cliente_agrupado.get("facturas_vencidas", [])
     facturas_proximas = cliente_agrupado.get("facturas_proximas", [])
@@ -553,6 +663,29 @@ def generar_html_recordatorio_agrupado(cliente_agrupado):
     cupo_disponible = cliente_agrupado.get("cupo_disponible", 0)
 
     logo_url = "https://images.jumpseller.com/store/lomarosa/store/logo/LR_LogotipoEslogan_CMYK.png?1662998750"
+
+    # Generar mensaje de cierre trimestral si aplica
+    mensaje_cierre_html = ""
+    if info_cierre and info_cierre.get("es_cierre") and incluir_mensaje_cierre:
+        tipo_cierre = info_cierre.get("mensaje_tipo", "Cierre trimestral")
+        fecha_cierre = info_cierre.get("fecha_formateada", fecha_titulo)
+
+        mensaje_cierre_html = f"""
+        <div style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); padding: 25px; margin: 20px 0 30px 0; border-radius: 12px; border-left: 5px solid #f59e0b;">
+            <h3 style="color: #92400e; margin: 0 0 15px 0; font-size: 20px;">
+                📋 {tipo_cierre} - {fecha_cierre}
+            </h3>
+            <p style="color: #78350f; margin: 0 0 12px 0; line-height: 1.7;">
+                Queremos agradecerte por la confianza y el trabajo conjunto durante este periodo. Valoramos profundamente nuestra relación comercial y el crecimiento que hemos construido contigo.
+            </p>
+            <p style="color: #78350f; margin: 0 0 12px 0; line-height: 1.7;">
+                Como parte de nuestros procesos de control y cierre contable, estamos realizando la confirmación de saldos con nuestros clientes y aliados estratégicos. Este ejercicio nos permite garantizar la precisión de nuestra información financiera y fortalecer la transparencia en nuestras relaciones comerciales.
+            </p>
+            <p style="color: #78350f; margin: 0; line-height: 1.7;">
+                Agradecemos de antemano tu colaboración con esta verificación y quedamos atentos a cualquier inquietud que pueda surgir.
+            </p>
+        </div>
+        """
 
     # Formatear montos
     total_saldo_formateado = f"${total_saldo:,.0f}"
@@ -661,11 +794,12 @@ def generar_html_recordatorio_agrupado(cliente_agrupado):
             </div>
 
             <div class="header">
-                <h1>📧 Recordatorio de Estado de Facturas</h1>
+                <h1>📧 Estado de Cuenta - {fecha_titulo}</h1>
                 <p>Cliente: <strong>{cliente}</strong></p>
             </div>
 
             <div class="content">
+                {mensaje_cierre_html}
                 <p>Estimado Cliente <strong>{cliente}</strong>,</p>
                 <p>A continuación presentamos el estado completo de sus facturas pendientes:</p>
 
@@ -726,7 +860,7 @@ def generar_html_recordatorio_agrupado(cliente_agrupado):
     """
 
 
-def _enviar_lote_agrupado(recordatorios_agrupados):
+def _enviar_lote_agrupado(recordatorios_agrupados, fecha_cartera=None, info_cierre=None, incluir_mensaje_cierre=True):
     """Envía lote de correos UNIFICADOS (vencidas + próximas + no vencidas)."""
     resultados = []
 
@@ -741,9 +875,15 @@ def _enviar_lote_agrupado(recordatorios_agrupados):
             total_vencidas = cliente_agrupado.get("total_vencidas", 0)
             total_proximas = cliente_agrupado.get("total_proximas", 0)
 
-            # Generar asunto descriptivo
-            asunto = f"Estado de Facturas - {total_facturas} facturas - {cliente_agrupado.get('cliente', 'Cliente')}"
-            cuerpo_html = generar_html_recordatorio_agrupado(cliente_agrupado)
+            # Generar asunto descriptivo con fecha cartera
+            fecha_asunto = fecha_cartera if fecha_cartera else date.today().strftime("%d/%m/%Y")
+            asunto = f"Estado de Cuenta - {fecha_asunto} - {cliente_agrupado.get('cliente', 'Cliente')}"
+            cuerpo_html = generar_html_recordatorio_agrupado(
+                cliente_agrupado,
+                fecha_cartera=fecha_cartera,
+                info_cierre=info_cierre,
+                incluir_mensaje_cierre=incluir_mensaje_cierre
+            )
             cuerpo_texto = f"Tiene {total_facturas} facturas pendientes ({total_vencidas} vencidas, {total_proximas} próximas)"
 
             future = executor.submit(
@@ -875,38 +1015,94 @@ def procesar_excel():
         
         contenido1 = file1.read()
         contenido2 = file2.read()
-        
-        df1 = pd.read_excel(BytesIO(contenido1))
-        
+
+        # Detectar cuál archivo es cuál probando ambos
+        archivo_clientes = None
+        archivo_cartera = None
+
+        # Variables para debug
+        debug_log = []
+
+        # Intentar detectar archivo 1
         try:
-            df2 = pd.read_excel(BytesIO(contenido2), sheet_name="Cartera por edades", header=11)
-            print("[INFO] Excel 2: Leyendo hoja 'Cartera por edades' (desde fila 12) ✓")
+            # Primero probar si es archivo de clientes (sin hoja específica)
+            df1_test = pd.read_excel(BytesIO(contenido1))
+            tipo1_cliente = detectar_tipo_excel(df1_test, "(Archivo 1 como CLIENTES)")
+            debug_log.append(f"Archivo1_clientes: {tipo1_cliente}, cols={list(df1_test.columns)[:5]}")
         except Exception as e:
-            return jsonify({
-                "success": False,
-                "message": f"No se encontró la hoja 'Cartera por edades' en el Excel 2. Error: {str(e)}"
-            }), 400
-        
-        tipo1 = detectar_tipo_excel(df1)
-        tipo2 = detectar_tipo_excel(df2)
-        
-        print(f"[INFO] Archivo 1 detectado como: {tipo1}")
-        print(f"[INFO] Archivo 2 detectado como: {tipo2}")
-        
-        if tipo1 == "clientes" and tipo2 == "cartera":
+            tipo1_cliente = None
+            debug_log.append(f"Archivo1_clientes: ERROR - {str(e)}")
+
+        try:
+            # Probar si es archivo de cartera (con hoja específica y header dinámico)
+            header_row_1 = detectar_fila_header_cartera(contenido1)
+            df1_cartera = pd.read_excel(BytesIO(contenido1), sheet_name="Cartera por edades", header=header_row_1)
+            tipo1_cartera = detectar_tipo_excel(df1_cartera, f"(Archivo 1 como CARTERA, header={header_row_1})")
+            debug_log.append(f"Archivo1_cartera: {tipo1_cartera}, header={header_row_1}, cols={list(df1_cartera.columns)[:5]}")
+        except Exception as e:
+            tipo1_cartera = None
+            debug_log.append(f"Archivo1_cartera: ERROR - {str(e)}")
+
+        # Intentar detectar archivo 2
+        try:
+            df2_test = pd.read_excel(BytesIO(contenido2))
+            tipo2_cliente = detectar_tipo_excel(df2_test, "(Archivo 2 como CLIENTES)")
+            debug_log.append(f"Archivo2_clientes: {tipo2_cliente}, cols={list(df2_test.columns)[:5]}")
+        except Exception as e:
+            tipo2_cliente = None
+            debug_log.append(f"Archivo2_clientes: ERROR - {str(e)}")
+
+        try:
+            # Probar si es archivo de cartera (con hoja específica y header dinámico)
+            header_row_2 = detectar_fila_header_cartera(contenido2)
+            df2_cartera = pd.read_excel(BytesIO(contenido2), sheet_name="Cartera por edades", header=header_row_2)
+            tipo2_cartera = detectar_tipo_excel(df2_cartera, f"(Archivo 2 como CARTERA, header={header_row_2})")
+            debug_log.append(f"Archivo2_cartera: {tipo2_cartera}, header={header_row_2}, cols={list(df2_cartera.columns)[:5]}")
+        except Exception as e:
+            tipo2_cartera = None
+            debug_log.append(f"Archivo2_cartera: ERROR - {str(e)}")
+
+        # Determinar qué archivo es cuál
+        print(f"\n[RESUMEN DETECCIÓN]")
+        print(f"  Archivo 1 - como clientes: {tipo1_cliente}")
+        print(f"  Archivo 1 - como cartera: {tipo1_cartera}")
+        print(f"  Archivo 2 - como clientes: {tipo2_cliente}")
+        print(f"  Archivo 2 - como cartera: {tipo2_cartera}")
+
+        if tipo1_cliente == "clientes" and tipo2_cartera == "cartera":
             archivo_clientes = contenido1
             archivo_cartera = contenido2
-        elif tipo1 == "cartera" and tipo2 == "clientes":
+            print("[INFO] Archivo 1 = Clientes, Archivo 2 = Cartera")
+        elif tipo1_cartera == "cartera" and tipo2_cliente == "clientes":
             archivo_clientes = contenido2
             archivo_cartera = contenido1
+            print("[INFO] Archivo 1 = Cartera, Archivo 2 = Clientes")
+        elif tipo2_cliente == "clientes" and tipo1_cartera == "cartera":
+            archivo_clientes = contenido2
+            archivo_cartera = contenido1
+            print("[INFO] Archivo 1 = Cartera, Archivo 2 = Clientes")
+        elif tipo2_cartera == "cartera" and tipo1_cliente == "clientes":
+            archivo_clientes = contenido1
+            archivo_cartera = contenido2
+            print("[INFO] Archivo 1 = Clientes, Archivo 2 = Cartera")
         else:
+            # Mensaje de error más detallado con debug completo
+            debug_info = " | ".join(debug_log)
             return jsonify({
                 "success": False,
-                "message": f"No se pudieron detectar los tipos de archivo correctamente. Tipo1: {tipo1}, Tipo2: {tipo2}."
+                "message": f"No se pudieron detectar los tipos de archivo. DEBUG: {debug_info}"
             }), 400
         
         dict_clientes, dict_vendedores = leer_excel_clientes(archivo_clientes)
         recordatorios = leer_excel_cartera(archivo_cartera, dict_clientes, dict_vendedores)
+
+        # Extraer fecha cartera y detectar cierre trimestral
+        fecha_cartera = extraer_fecha_cartera(archivo_cartera)
+        info_cierre = detectar_cierre_trimestral(fecha_cartera)
+
+        print(f"\n[INFO] Fecha Cartera: {fecha_cartera.strftime('%d/%m/%Y') if fecha_cartera else 'No detectada'}")
+        if info_cierre:
+            print(f"[INFO] ¡CIERRE DETECTADO! Tipo: {info_cierre['mensaje_tipo']}")
 
         if not recordatorios:
             return jsonify({
@@ -918,6 +1114,8 @@ def procesar_excel():
                     "proximas": 0,
                     "no_vencidas": 0
                 },
+                "fecha_cartera": fecha_cartera.strftime("%d/%m/%Y") if fecha_cartera else None,
+                "info_cierre": info_cierre,
                 "message": "No se encontraron facturas con email asignado."
             })
 
@@ -934,7 +1132,9 @@ def procesar_excel():
                 "vencidas": vencidas,
                 "proximas": proximas,
                 "no_vencidas": no_vencidas
-            }
+            },
+            "fecha_cartera": fecha_cartera.strftime("%d/%m/%Y") if fecha_cartera else None,
+            "info_cierre": info_cierre
         })
     
     except Exception as e:
@@ -960,6 +1160,14 @@ def enviar_correos():
             }), 400
 
         recordatorios = datos["recordatorios"]
+        fecha_cartera = datos.get("fecha_cartera", None)
+        info_cierre = datos.get("info_cierre", None)
+        incluir_mensaje_cierre = datos.get("incluir_mensaje_cierre", True)
+
+        print(f"\n[INFO] Parámetros de envío:")
+        print(f"  - Fecha Cartera: {fecha_cartera}")
+        print(f"  - Info Cierre: {info_cierre}")
+        print(f"  - Incluir mensaje cierre: {incluir_mensaje_cierre}")
 
         if not isinstance(recordatorios, list) or len(recordatorios) == 0:
             return jsonify({
@@ -980,7 +1188,12 @@ def enviar_correos():
         print(f"\n[INFO] Iniciando envío de {len(recordatorios_agrupados)} correos unificados...")
 
         # ← ENVIAR LOTE
-        resultados = _enviar_lote_agrupado(recordatorios_agrupados)
+        resultados = _enviar_lote_agrupado(
+            recordatorios_agrupados,
+            fecha_cartera=fecha_cartera,
+            info_cierre=info_cierre,
+            incluir_mensaje_cierre=incluir_mensaje_cierre
+        )
 
         exitosos = sum(1 for r in resultados if r["success"])
         fallidos = len(resultados) - exitosos

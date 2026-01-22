@@ -680,3 +680,83 @@ button:disabled {
     background: var(--color-primary-dark);
     transform: translateY(-2px);
 }
+
+/* ==========================================
+   ALERTA DE CIERRE TRIMESTRAL
+   ========================================== */
+
+.cierre-alert {
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border: 2px solid #f59e0b;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+    animation: slideUp 0.5s ease-out;
+}
+
+.cierre-alert-content {
+    display: flex;
+    align-items: flex-start;
+    gap: 15px;
+    margin-bottom: 15px;
+}
+
+.cierre-alert-icon {
+    font-size: 2.5rem;
+    flex-shrink: 0;
+}
+
+.cierre-alert-text {
+    flex: 1;
+}
+
+.cierre-alert-text strong {
+    font-size: 1.2rem;
+    color: #92400e;
+    display: block;
+    margin-bottom: 8px;
+}
+
+.cierre-alert-text p {
+    color: #78350f;
+    margin: 5px 0;
+    font-size: 0.95rem;
+}
+
+.cierre-alert-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-top: 15px;
+    border-top: 1px solid #fbbf24;
+}
+
+.cierre-alert-checkbox input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    accent-color: #f59e0b;
+}
+
+.cierre-alert-checkbox label {
+    color: #92400e;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.95rem;
+}
+
+/* INFO FECHA CARTERA */
+
+.fecha-cartera-info {
+    background: #e0e7ff;
+    border-left: 4px solid var(--color-primary);
+    padding: 12px 20px;
+    border-radius: 0 8px 8px 0;
+    margin-bottom: 20px;
+    color: var(--color-primary-dark);
+    font-size: 0.95rem;
+}
+
+.fecha-cartera-info strong {
+    color: var(--color-primary);
+}

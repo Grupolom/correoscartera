@@ -60,6 +60,27 @@
                 <h2>Vista Previa de Clientes y Facturas</h2>
             </div>
 
+            <!-- ALERTA DE CIERRE TRIMESTRAL -->
+            <div class="cierre-alert" id="cierreAlert" style="display: none;">
+                <div class="cierre-alert-content">
+                    <div class="cierre-alert-icon">📋</div>
+                    <div class="cierre-alert-text">
+                        <strong id="cierreTitulo">Cierre Trimestral Detectado</strong>
+                        <p>Fecha de cartera: <span id="cierreFecha"></span></p>
+                        <p>Se añadirá un mensaje especial de confirmación de saldos en los correos.</p>
+                    </div>
+                </div>
+                <div class="cierre-alert-checkbox">
+                    <input type="checkbox" id="checkIncluirMensajeCierre" checked>
+                    <label for="checkIncluirMensajeCierre">Incluir mensaje de cierre en los correos</label>
+                </div>
+            </div>
+
+            <!-- INFO FECHA CARTERA -->
+            <div class="fecha-cartera-info" id="fechaCarteraInfo" style="display: none;">
+                <span>📅 Fecha de Cartera: <strong id="fechaCarteraDisplay"></strong></span>
+            </div>
+
             <!-- Estadísticas -->
             <div class="stats-grid">
                 <div class="stat-card stat-danger">

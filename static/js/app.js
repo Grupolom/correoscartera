@@ -6,6 +6,8 @@ let file1Obj = null;
 let file2Obj = null;
 let recordatoriosGlobal = [];
 let clientesAgrupados = [];
+let fechaCarteraGlobal = null;
+let infoCierreGlobal = null;
 
 // ==========================================
 // UTILIDADES
@@ -227,6 +229,11 @@ async function analizarArchivos() {
         }
 
         recordatoriosGlobal = resultado.recordatorios || [];
+        fechaCarteraGlobal = resultado.fecha_cartera || null;
+        infoCierreGlobal = resultado.info_cierre || null;
+
+        console.log(`📅 Fecha Cartera: ${fechaCarteraGlobal}`);
+        console.log(`📋 Info Cierre:`, infoCierreGlobal);
 
         if (recordatoriosGlobal.length === 0) {
             alert("No se encontraron facturas con email asignado.");
@@ -240,6 +247,12 @@ async function analizarArchivos() {
 
         renderTablaUnificada();
         renderEstadisticas(resultado.stats);
+
+        // Mostrar fecha cartera
+        mostrarFechaCartera(fechaCarteraGlobal);
+
+        // Mostrar alerta de cierre trimestral si aplica
+        mostrarAlertaCierre(infoCierreGlobal, fechaCarteraGlobal);
 
         document.getElementById("step2").style.display = "block";
         document.getElementById("step3").style.display = "block";
@@ -406,6 +419,46 @@ function renderEstadisticas(stats) {
     document.getElementById("statTotal").textContent = stats.total || 0;
 }
 
+// ==========================================
+// FUNCIONES DE CIERRE TRIMESTRAL
+// ==========================================
+
+function mostrarFechaCartera(fechaCartera) {
+    const infoDiv = document.getElementById("fechaCarteraInfo");
+    const fechaDisplay = document.getElementById("fechaCarteraDisplay");
+
+    if (fechaCartera) {
+        fechaDisplay.textContent = fechaCartera;
+        infoDiv.style.display = "block";
+    } else {
+        infoDiv.style.display = "none";
+    }
+}
+
+function mostrarAlertaCierre(infoCierre, fechaCartera) {
+    const alertDiv = document.getElementById("cierreAlert");
+    const tituloEl = document.getElementById("cierreTitulo");
+    const fechaEl = document.getElementById("cierreFecha");
+    const checkbox = document.getElementById("checkIncluirMensajeCierre");
+
+    if (infoCierre && infoCierre.es_cierre) {
+        // Determinar título según tipo de cierre
+        const tipoTexto = infoCierre.tipo === "anual" ? "🎄 Cierre Anual Detectado" : "📋 Cierre Trimestral Detectado";
+        tituloEl.textContent = tipoTexto;
+        fechaEl.textContent = infoCierre.fecha_formateada || fechaCartera;
+
+        // Activar checkbox por defecto
+        checkbox.checked = true;
+
+        // Mostrar alerta
+        alertDiv.style.display = "block";
+
+        console.log(`✅ Cierre ${infoCierre.tipo} detectado para fecha ${infoCierre.fecha_formateada}`);
+    } else {
+        alertDiv.style.display = "none";
+    }
+}
+
 function actualizarConteoEnvio() {
     const clientesSeleccionados = document.querySelectorAll('.check-cliente:checked').length;
     document.getElementById("countClientesEnviar").textContent = clientesSeleccionados;
@@ -460,10 +513,24 @@ async function enviarCorreos() {
         return;
     }
 
-    const confirmacion = confirm(
-        `¿Enviar ${checkboxes.length} correos unificados?\n\n` +
-        `Cada cliente recibirá UN SOLO correo con todas sus facturas (vencidas, próximas y no vencidas).`
-    );
+    // Verificar si se incluye mensaje de cierre
+    const checkIncluirCierre = document.getElementById("checkIncluirMensajeCierre");
+    const incluirMensajeCierre = checkIncluirCierre ? checkIncluirCierre.checked : false;
+
+    // Construir mensaje de confirmación
+    let mensajeConfirm = `¿Enviar ${checkboxes.length} correos unificados?\n\n`;
+    mensajeConfirm += `Cada cliente recibirá UN SOLO correo con todas sus facturas (vencidas, próximas y no vencidas).`;
+
+    if (infoCierreGlobal && infoCierreGlobal.es_cierre) {
+        if (incluirMensajeCierre) {
+            const tipoCierre = infoCierreGlobal.tipo === "anual" ? "CIERRE ANUAL" : "CIERRE TRIMESTRAL";
+            mensajeConfirm += `\n\n📋 Se incluirá mensaje de ${tipoCierre} en los correos.`;
+        } else {
+            mensajeConfirm += `\n\n⚠️ El mensaje de cierre trimestral NO se incluirá.`;
+        }
+    }
+
+    const confirmacion = confirm(mensajeConfirm);
 
     if (!confirmacion) {
         return;
@@ -476,6 +543,7 @@ async function enviarCorreos() {
     }));
 
     console.log(`📧 Enviando correos a ${clientesSeleccionados.length} clientes...`);
+    console.log(`📋 Incluir mensaje cierre: ${incluirMensajeCierre}`);
 
     // Filtrar recordatorios para clientes seleccionados
     const recordatoriosFiltrados = recordatoriosGlobal.filter(r => {
@@ -505,7 +573,12 @@ async function enviarCorreos() {
         const response = await fetch("/enviar-correos", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ recordatorios: recordatoriosFiltrados })
+            body: JSON.stringify({
+                recordatorios: recordatoriosFiltrados,
+                fecha_cartera: fechaCarteraGlobal,
+                info_cierre: infoCierreGlobal,
+                incluir_mensaje_cierre: incluirMensajeCierre
+            })
         });
 
         if (!response.ok) {
