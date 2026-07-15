@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import resend
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,7 +31,8 @@ EMAIL_FROM_ADDRESS = os.getenv("EMAIL_FROM_ADDRESS", "cartera@grupolom.com")
 resend.api_key = RESEND_API_KEY
 
 
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
+MAX_WORKERS    = int(os.getenv("MAX_WORKERS", "3"))
+DELAY_SEGUNDOS = float(os.getenv("DELAY_SEGUNDOS", "2"))
 
 
 # ==========================================
@@ -1106,6 +1108,8 @@ def _enviar_lote_agrupado(recordatorios_agrupados, fecha_cartera=None, info_cier
 
         for future in as_completed(tareas):
             cliente_agrupado = tareas[future]
+            if DELAY_SEGUNDOS > 0:
+                time.sleep(DELAY_SEGUNDOS)
             try:
                 resultado = future.result()
                 resultados.append({
