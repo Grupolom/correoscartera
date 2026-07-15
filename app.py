@@ -34,6 +34,24 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
 
 
 # ==========================================
+# CORREOS FIJOS DE CC
+# ==========================================
+
+CC_CARTERA = "cartera@grupolom.com"
+
+CORREOS_VENDEDORES = {
+    "padilla manga william dario":          "w.padilla@grupolom.com",
+    "pardo prada jorge alberto":            "j.pardo@grupolom.com",
+    "silvestre acosta angela lucia":        "a.silvestre@grupolom.com",
+    "gonzalez triana jennifer":             "comercial.lomarosa@gmail.com",
+    "de jesus oropeza yohn robinson":       "supervisortat@grupolom.com",
+    "rodriguez rodriguez wilson javier":    "j.rodriguez@grupolom.com",
+    "farfan ospina juan carlos":            "asesorcomercial@grupolom.com",
+    "pardo prada alfredo":                  "j.pardo@grupolom.com",
+}
+
+
+# ==========================================
 # FUNCIONES DE NORMALIZACIÓN
 # ==========================================
 
@@ -431,13 +449,14 @@ def leer_excel_clientes(archivo_bytes):
                     cupo_valor = 0
 
             vendedor_nombre = str(row[col_vendedor]).strip() if col_vendedor and pd.notna(row[col_vendedor]) else "N/A"
+            correo_vendedor = CORREOS_VENDEDORES.get(normalizar_nombre(vendedor_nombre), "N/A")
 
             entrada = {
                 "nit": nit_clean or "N/A",
                 "cliente": str(tercero).strip(),
                 "correo_cliente": str(email).strip(),
                 "vendedor": vendedor_nombre,
-                "correo_vendedor": "N/A",
+                "correo_vendedor": correo_vendedor,
                 "cupo": cupo_valor
             }
             dict_clientes[tercero_norm] = entrada
@@ -777,8 +796,8 @@ def _leer_cartera_formato_antiguo(archivo_bytes, dict_clientes, dict_vendedores)
 # ==========================================
 
 
-def enviar_email_individual(destinatario_principal, destinatario_cc, asunto, cuerpo_html, cuerpo_texto=None):
-    """Envía un correo electrónico individual con CC opcional via Resend."""
+def enviar_email_individual(destinatario_principal, lista_cc, asunto, cuerpo_html, cuerpo_texto=None):
+    """Envía un correo electrónico individual con CC múltiple via Resend."""
     try:
         if not RESEND_API_KEY:
             return {
@@ -801,8 +820,9 @@ def enviar_email_individual(destinatario_principal, destinatario_cc, asunto, cue
             "html": cuerpo_html,
         }
 
-        if destinatario_cc and "@" in destinatario_cc:
-            params["cc"] = [destinatario_cc]
+        cc_validos = [c for c in (lista_cc or []) if c and "@" in c]
+        if cc_validos:
+            params["cc"] = cc_validos
 
         if cuerpo_texto:
             params["text"] = cuerpo_texto
@@ -812,7 +832,7 @@ def enviar_email_individual(destinatario_principal, destinatario_cc, asunto, cue
         return {
             "success": True,
             "destinatario": destinatario_principal,
-            "destinatario_cc": destinatario_cc,
+            "destinatario_cc": cc_validos,
             "error": None
         }
 
@@ -1052,13 +1072,17 @@ def _enviar_lote_agrupado(recordatorios_agrupados, fecha_cartera=None, info_cier
 
         for cliente_agrupado in recordatorios_agrupados:
             destinatario_principal = cliente_agrupado.get("correo_cliente", "")
-            destinatario_cc = cliente_agrupado.get("correo_vendedor", None)
+            correo_vendedor = cliente_agrupado.get("correo_vendedor", None)
+
+            # CC siempre incluye cartera@grupolom.com + comercial del cliente
+            lista_cc = [CC_CARTERA]
+            if correo_vendedor and correo_vendedor != "N/A":
+                lista_cc.append(correo_vendedor)
 
             total_facturas = cliente_agrupado.get("total_facturas", 0)
             total_vencidas = cliente_agrupado.get("total_vencidas", 0)
             total_proximas = cliente_agrupado.get("total_proximas", 0)
 
-            # Generar asunto descriptivo con fecha cartera
             fecha_asunto = fecha_cartera if fecha_cartera else date.today().strftime("%d/%m/%Y")
             asunto = f"Estado de Cuenta - {fecha_asunto} - {cliente_agrupado.get('cliente', 'Cliente')}"
             cuerpo_html = generar_html_recordatorio_agrupado(
@@ -1072,7 +1096,7 @@ def _enviar_lote_agrupado(recordatorios_agrupados, fecha_cartera=None, info_cier
             future = executor.submit(
                 enviar_email_individual,
                 destinatario_principal,
-                destinatario_cc,
+                lista_cc,
                 asunto,
                 cuerpo_html,
                 cuerpo_texto
@@ -1149,7 +1173,7 @@ def test_email():
 
         resultado = enviar_email_individual(
             destinatario_principal=destinatario_prueba,
-            destinatario_cc=None,
+            lista_cc=[],
             asunto=asunto,
             cuerpo_html=cuerpo_html
         )
