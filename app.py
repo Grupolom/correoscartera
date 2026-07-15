@@ -1231,9 +1231,11 @@ def procesar_excel():
 
         # Intentar detectar archivo 1
         try:
-            # Primero probar si es archivo de clientes (sin hoja específica)
             df1_test = pd.read_excel(BytesIO(contenido1))
-            tipo1_cliente = detectar_tipo_excel(df1_test, "(Archivo 1 como CLIENTES)")
+            tipo1_cliente = detectar_tipo_excel(df1_test, "(Archivo 1 como CLIENTES h=0)")
+            if not tipo1_cliente:
+                df1_test = pd.read_excel(BytesIO(contenido1), header=1)
+                tipo1_cliente = detectar_tipo_excel(df1_test, "(Archivo 1 como CLIENTES h=1)")
             debug_log.append(f"Archivo1_clientes: {tipo1_cliente}, cols={list(df1_test.columns)[:5]}")
         except Exception as e:
             tipo1_cliente = None
@@ -1256,7 +1258,10 @@ def procesar_excel():
         # Intentar detectar archivo 2
         try:
             df2_test = pd.read_excel(BytesIO(contenido2))
-            tipo2_cliente = detectar_tipo_excel(df2_test, "(Archivo 2 como CLIENTES)")
+            tipo2_cliente = detectar_tipo_excel(df2_test, "(Archivo 2 como CLIENTES h=0)")
+            if not tipo2_cliente:
+                df2_test = pd.read_excel(BytesIO(contenido2), header=1)
+                tipo2_cliente = detectar_tipo_excel(df2_test, "(Archivo 2 como CLIENTES h=1)")
             debug_log.append(f"Archivo2_clientes: {tipo2_cliente}, cols={list(df2_test.columns)[:5]}")
         except Exception as e:
             tipo2_cliente = None
