@@ -24,8 +24,8 @@ echo [OK] Python encontrado.
 echo.
 
 echo [2/3] Verificando dependencias...
-echo Instalando/verificando: Flask, Flask-CORS, python-dotenv, openpyxl, xlrd...
-pip install Flask Flask-CORS python-dotenv openpyxl xlrd --quiet
+echo Instalando/verificando: Flask, Flask-CORS, python-dotenv, openpyxl, xlrd, resend...
+pip install Flask Flask-CORS python-dotenv openpyxl xlrd resend --quiet
 if errorlevel 1 (
     echo [ERROR] No se pudieron instalar las dependencias.
     pause
@@ -41,8 +41,7 @@ if not exist ".env" (
     echo ============================================================
     echo.
     echo Para enviar correos, necesitas configurar .env con:
-    echo - EMAIL_USER=tu_correo@gmail.com
-    echo - EMAIL_PASSWORD=tu_contraseña_aplicacion
+    echo - RESEND_API_KEY=re_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
     echo.
     echo Presiona cualquier tecla para continuar sin configuracion...
     echo.

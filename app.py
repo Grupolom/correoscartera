@@ -1,9 +1,7 @@
 import os
 import json
-import smtplib
+import resend
 import webbrowser
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
@@ -25,12 +23,11 @@ CORS(app)
 # ==========================================
 # CONFIGURACIÓN DE CORREO ELECTRÓNICO
 # ==========================================
-EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
-EMAIL_USER = os.getenv("EMAIL_USER", "")  
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")  
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Cartera Lomarosa")
-EMAIL_FROM_ADDRESS = os.getenv("EMAIL_FROM_ADDRESS", EMAIL_USER)
+EMAIL_FROM_ADDRESS = os.getenv("EMAIL_FROM_ADDRESS", "cartera@grupolom.com")
+
+resend.api_key = RESEND_API_KEY
 
 
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
@@ -42,15 +39,21 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
 
 
 def normalizar_nombre(nombre):
-    """Normaliza un nombre para hacer matching: trim + lowercase"""
     if not nombre:
         return ""
     return str(nombre).strip().lower()
 
 
 def normalizar_columna(col):
-    """Normaliza nombre de columna para búsqueda flexible"""
     return str(col).strip().lower().replace('  ', ' ')
+
+
+def normalizar_nit(nit_str):
+    """Extrae solo dígitos del NIT para comparación robusta."""
+    if not nit_str:
+        return None
+    digits = ''.join(filter(str.isdigit, str(nit_str)))
+    return digits if digits else None
 
 
 # ==========================================
@@ -59,34 +62,56 @@ def normalizar_columna(col):
 
 
 def extraer_fecha_cartera(archivo_bytes):
-    """
-    Extrae la fecha de cartera del Excel buscando 'Fecha Cartera' en columna E
-    y tomando el valor de la celda a su derecha (columna F).
-    """
+    """Extrae la fecha de corte del Excel de cartera. Soporta formato nuevo y antiguo."""
     try:
-        # Leer el Excel sin header para buscar en todas las filas
-        df_raw = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Cartera por edades", header=None)
+        xl = pd.ExcelFile(BytesIO(archivo_bytes))
 
-        # Buscar "Fecha Cartera" en columna E (índice 4)
-        fecha_cartera = None
-        for idx, valor in enumerate(df_raw.iloc[:, 4]):  # Columna E = índice 4
-            if pd.notna(valor) and "fecha cartera" in str(valor).lower():
-                # Tomar el valor de la celda a la derecha (columna F = índice 5)
-                fecha_cartera_raw = df_raw.iloc[idx, 5]
-                if pd.notna(fecha_cartera_raw):
-                    try:
-                        fecha_cartera = pd.to_datetime(fecha_cartera_raw).date()
-                        print(f"[INFO] Fecha Cartera encontrada: {fecha_cartera.strftime('%d/%m/%Y')}")
-                    except:
-                        fecha_cartera = None
-                        print(f"[WARNING] No se pudo parsear fecha cartera: {fecha_cartera_raw}")
-                break
+        # Formato nuevo: "Informe de Vencimientos" — busca "Fecha de Corte:" en primeras filas
+        if "Informe de Vencimientos" in xl.sheet_names:
+            df_raw = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Informe de Vencimientos", header=None, nrows=12)
+            for idx in range(len(df_raw)):
+                for col_idx in range(len(df_raw.columns)):
+                    val = df_raw.iloc[idx, col_idx]
+                    if pd.notna(val) and "fecha de corte" in str(val).lower():
+                        val_str = str(val).strip()
+                        if ":" in val_str:
+                            date_part = val_str.split(":", 1)[1].strip()
+                            try:
+                                fecha = pd.to_datetime(date_part).date()
+                                print(f"[INFO] Fecha de Corte encontrada: {fecha.strftime('%d/%m/%Y')}")
+                                return fecha
+                            except:
+                                pass
+                        # Intentar columna adyacente
+                        if col_idx + 1 < len(df_raw.columns):
+                            next_val = df_raw.iloc[idx, col_idx + 1]
+                            if pd.notna(next_val):
+                                try:
+                                    fecha = pd.to_datetime(next_val).date()
+                                    print(f"[INFO] Fecha de Corte encontrada: {fecha.strftime('%d/%m/%Y')}")
+                                    return fecha
+                                except:
+                                    pass
+            print("[WARNING] No se encontró 'Fecha de Corte' en 'Informe de Vencimientos'")
+            return date.today()
 
-        if not fecha_cartera:
-            print("[WARNING] No se encontró 'Fecha Cartera' en columna E del Excel")
-            fecha_cartera = date.today()
+        # Formato antiguo: "Cartera por edades" — busca "Fecha Cartera" en columna E
+        if "Cartera por edades" in xl.sheet_names:
+            df_raw = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Cartera por edades", header=None)
+            for idx, valor in enumerate(df_raw.iloc[:, 4]):
+                if pd.notna(valor) and "fecha cartera" in str(valor).lower():
+                    fecha_raw = df_raw.iloc[idx, 5]
+                    if pd.notna(fecha_raw):
+                        try:
+                            fecha = pd.to_datetime(fecha_raw).date()
+                            print(f"[INFO] Fecha Cartera encontrada: {fecha.strftime('%d/%m/%Y')}")
+                            return fecha
+                        except:
+                            pass
+                    break
 
-        return fecha_cartera
+        print("[WARNING] No se detectó fecha de cartera. Usando fecha de hoy.")
+        return date.today()
 
     except Exception as e:
         print(f"[ERROR] Error al extraer fecha cartera: {e}")
@@ -236,75 +261,85 @@ def dividir_en_lotes(recordatorios, limite=450):
 # ==========================================
 
 
-def detectar_fila_header_cartera(archivo_bytes):
-    """
-    Detecta dinámicamente en qué fila está el header de la tabla de cartera.
-    Busca la fila que contenga 'Nombre tercero' en la primera columna.
-    Retorna el índice de la fila (para usar como header en pd.read_excel).
-    """
+def _detectar_sheet_cartera(archivo_bytes):
+    """Retorna el nombre de la hoja de cartera del archivo, o None si no es un archivo de cartera."""
     try:
-        df_raw = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Cartera por edades", header=None, nrows=20)
+        xl = pd.ExcelFile(BytesIO(archivo_bytes))
+        if "Informe de Vencimientos" in xl.sheet_names:
+            return "Informe de Vencimientos"
+        if "Cartera por edades" in xl.sheet_names:
+            return "Cartera por edades"
+    except:
+        pass
+    return None
 
-        for idx, valor in enumerate(df_raw.iloc[:, 0]):  # Columna A
-            if pd.notna(valor) and "nombre tercero" in str(valor).lower():
-                print(f"[DEBUG] Header de cartera encontrado en fila {idx}")
-                return idx
 
-        print("[DEBUG] No se encontró 'Nombre tercero' en columna A, usando default 11")
-        return 11  # Default antiguo
+def detectar_fila_header_cartera(archivo_bytes):
+    """Detecta dinámicamente la fila del header en el archivo de cartera."""
+    try:
+        xl = pd.ExcelFile(BytesIO(archivo_bytes))
+
+        # Formato nuevo
+        if "Informe de Vencimientos" in xl.sheet_names:
+            df_raw = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Informe de Vencimientos", header=None, nrows=15)
+            for idx, valor in enumerate(df_raw.iloc[:, 0]):
+                if pd.notna(valor) and str(valor).strip().lower() == "cuenta":
+                    print(f"[DEBUG] Header cartera (nuevo formato) en fila {idx}")
+                    return idx
+            return 9
+
+        # Formato antiguo
+        if "Cartera por edades" in xl.sheet_names:
+            df_raw = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Cartera por edades", header=None, nrows=20)
+            for idx, valor in enumerate(df_raw.iloc[:, 0]):
+                if pd.notna(valor) and "nombre tercero" in str(valor).lower():
+                    print(f"[DEBUG] Header cartera (formato antiguo) en fila {idx}")
+                    return idx
+            return 11
+
     except Exception as e:
         print(f"[DEBUG] Error buscando header: {e}")
-        return 11
+    return 9
 
 
 def detectar_tipo_excel(df, debug_info=""):
-    """Detecta si el Excel es Excel 1 (Clientes) o Excel 2 (Cartera) según sus columnas."""
+    """Detecta si el DataFrame es de Clientes o de Cartera. Soporta formato nuevo y antiguo."""
     columnas_lower = [normalizar_columna(col) for col in df.columns]
     columnas_str = " ".join(columnas_lower)
 
-    print("=" * 60)
-    print(f"[DEBUG] Detectando tipo de Excel {debug_info}...")
-    print(f"[DEBUG] Total columnas: {len(columnas_lower)}")
-    print(f"[DEBUG] Primeras 15 columnas: {columnas_lower[:15]}")
-    print("=" * 60)
+    print(f"[DEBUG] Detectando tipo {debug_info} | columnas: {columnas_lower[:10]}")
 
+    # --- CLIENTES ---
     tiene_nit = "nit" in columnas_str
+    tiene_tercero = "tercero" in columnas_str
     tiene_cliente = "cliente" in columnas_str
+    tiene_email = "email" in columnas_str
     tiene_correo_cliente = "correo cliente" in columnas_str or "correocliente" in columnas_str.replace(' ', '')
 
+    # --- CARTERA formato nuevo: Cuenta / Documento / Fecha Vence / Días Vence / Saldo ---
+    tiene_cuenta = "cuenta" in columnas_str
+    tiene_documento = "documento" in columnas_str
+    tiene_fecha_vence = "fecha vence" in columnas_str or "fechavence" in columnas_str.replace(' ', '')
+    tiene_dias_vence = "días vence" in columnas_str or "dias vence" in columnas_str
+
+    # --- CARTERA formato antiguo: Nombre tercero / Numero FAC / Vencimiento / Dias / Saldo ---
     tiene_nombre_tercero = "nombre tercero" in columnas_str or "nombretercero" in columnas_str.replace(' ', '')
     tiene_numero_fac = "numero fac" in columnas_str or "numerofac" in columnas_str.replace(' ', '') or " fac " in columnas_str
     tiene_vencimiento = "vencimiento" in columnas_str
     tiene_dias = "dias" in columnas_str or "días" in columnas_str
     tiene_saldo = "saldo" in columnas_str
 
-    print(f"[DEBUG] Verificación Excel CLIENTES:")
-    print(f"  - tiene_nit: {tiene_nit}")
-    print(f"  - tiene_cliente: {tiene_cliente}")
-    print(f"  - tiene_correo_cliente: {tiene_correo_cliente}")
-    print()
-    print(f"[DEBUG] Verificación Excel CARTERA:")
-    print(f"  - tiene_nombre_tercero: {tiene_nombre_tercero}")
-    print(f"  - tiene_numero_fac: {tiene_numero_fac}")
-    print(f"  - tiene_vencimiento: {tiene_vencimiento}")
-    print(f"  - tiene_dias: {tiene_dias}")
-    print(f"  - tiene_saldo: {tiene_saldo}")
-    print("=" * 60)
-
-    if tiene_nit and tiene_cliente and tiene_correo_cliente:
-        print("[DEBUG] ✓ Detectado como: CLIENTES")
+    if tiene_nit and (tiene_tercero or tiene_cliente) and (tiene_email or tiene_correo_cliente):
+        print(f"[DEBUG] [OK] CLIENTES {debug_info}")
         return "clientes"
+    elif tiene_cuenta and tiene_documento and tiene_fecha_vence and tiene_dias_vence and tiene_saldo:
+        print(f"[DEBUG] [OK] CARTERA nuevo formato {debug_info}")
+        return "cartera"
     elif tiene_nombre_tercero and tiene_numero_fac and tiene_vencimiento and tiene_dias and tiene_saldo:
-        print("[DEBUG] ✓ Detectado como: CARTERA")
+        print(f"[DEBUG] [OK] CARTERA formato antiguo {debug_info}")
         return "cartera"
     else:
-        print("[DEBUG] ✗ NO DETECTADO (devolviendo None)")
-        print(f"[DEBUG] Columnas faltantes para CARTERA:")
-        if not tiene_nombre_tercero: print("  - FALTA: nombre tercero")
-        if not tiene_numero_fac: print("  - FALTA: numero fac")
-        if not tiene_vencimiento: print("  - FALTA: vencimiento")
-        if not tiene_dias: print("  - FALTA: dias")
-        if not tiene_saldo: print("  - FALTA: saldo")
+        print(f"[DEBUG] [NO DETECTADO] {debug_info}")
         return None
 
 
@@ -331,79 +366,259 @@ def buscar_columna_exacta(df, nombres_esperados):
 
 
 def leer_excel_clientes(archivo_bytes):
-    """Lee Excel 1 (Clientes y Vendedores) y retorna dos diccionarios."""
-    df = pd.read_excel(BytesIO(archivo_bytes))
+    """Lee Excel de Clientes. Soporta formato nuevo (Tercero/Email, header fila 1) y antiguo."""
 
-    print(f"[DEBUG] Columnas en Excel 1: {list(df.columns)}")
+    # Detectar si tiene fila decorativa en fila 0 → header real en fila 1
+    df_peek = pd.read_excel(BytesIO(archivo_bytes), header=0, nrows=1)
+    cols_peek = [str(c).lower() for c in df_peek.columns]
+    if any("exported" in c or (c.startswith("unnamed") and i == 0) for i, c in enumerate(cols_peek)):
+        df = pd.read_excel(BytesIO(archivo_bytes), header=1)
+        print("[INFO] Excel Clientes: header en fila 1 (formato nuevo)")
+    else:
+        df = pd.read_excel(BytesIO(archivo_bytes))
+        print("[INFO] Excel Clientes: header en fila 0 (formato antiguo)")
 
-    col_nit = buscar_columna_exacta(df, ["Nit", "NIT"])
-    col_cliente = buscar_columna_exacta(df, ["Cliente", "cliente"])
-    col_nombre_comercial = buscar_columna_exacta(df, ["Nombre comercial", "Nombrecomercial"])
-    col_correo_cliente = buscar_columna_exacta(df, ["Correo cliente", "Correocliente", "Email cliente"])
-    col_vendedor = buscar_columna_exacta(df, ["Vendedor", "vendedor"])
+    print(f"[DEBUG] Columnas detectadas: {list(df.columns)}")
+
+    col_nit             = buscar_columna_exacta(df, ["Nit", "NIT"])
+    col_tercero         = buscar_columna_exacta(df, ["Tercero", "Cliente", "tercero", "cliente"])
+    col_email           = buscar_columna_exacta(df, ["Email", "Correo cliente", "Correo", "email"])
+    col_vendedor        = buscar_columna_exacta(df, ["Vendedor", "vendedor"])
     col_correo_vendedor = buscar_columna_exacta(df, ["Correo vendedor", "Correovendedor", "Email vendedor"])
-    col_canal = buscar_columna_exacta(df, ["Canal", "canal"])
-    col_cupo = buscar_columna_exacta(df, ["Cupo", "cupo", "Cupo de crédito", "Cupo de credito", "Cupo credito"])
+    col_cupo            = buscar_columna_exacta(df, ["Cupo Asignado", "Cupo", "Cupo de crédito", "Cupo de credito", "Cupo credito"])
 
-    if not col_cliente:
-        raise ValueError(f"No se encontró columna 'Cliente' en Excel 1. Columnas: {list(df.columns)}")
-    if not col_correo_cliente:
-        raise ValueError(f"No se encontró columna 'Correo cliente' en Excel 1. Columnas: {list(df.columns)}")
+    if not col_tercero:
+        raise ValueError(f"No se encontró columna de cliente/tercero. Columnas: {list(df.columns)}")
+    if not col_email:
+        raise ValueError(f"No se encontró columna de email. Columnas: {list(df.columns)}")
 
-    print(f"[INFO] Columnas detectadas en Excel 1:")
-    print(f"  - Cliente: {col_cliente}")
-    print(f"  - Correo cliente: {col_correo_cliente}")
-    print(f"  - Vendedor: {col_vendedor}")
-    print(f"  - Correo vendedor: {col_correo_vendedor}")
-    print(f"  - Cupo: {col_cupo if col_cupo else '❌ NO ENCONTRADO (se usará $0)'}")
+    print(f"[INFO] Mapeo de columnas:")
+    print(f"  - Tercero/Cliente : {col_tercero}")
+    print(f"  - Email           : {col_email}")
+    print(f"  - Vendedor        : {col_vendedor}")
+    print(f"  - Correo vendedor : {col_correo_vendedor if col_correo_vendedor else '[No disponible - sin CC]'}")
+    print(f"  - Cupo            : {col_cupo if col_cupo else '[No encontrado - $0 por defecto]'}")
 
     dict_clientes = {}
     dict_vendedores = {}
 
     for _, row in df.iterrows():
-        cliente = row[col_cliente] if pd.notna(row[col_cliente]) else None
-        correo_cliente = row[col_correo_cliente] if pd.notna(row[col_correo_cliente]) else None
+        tercero = row[col_tercero] if pd.notna(row[col_tercero]) else None
+        email   = row[col_email]   if pd.notna(row[col_email])   else None
 
-        if cliente and correo_cliente:
-            cliente_norm = normalizar_nombre(cliente)
-            if cliente_norm:
-                # Procesar cupo (validar que sea numérico)
-                cupo_valor = 0
-                if col_cupo and pd.notna(row[col_cupo]):
-                    try:
-                        cupo_valor = float(row[col_cupo])
-                    except (ValueError, TypeError):
-                        cupo_valor = 0
-                        print(f"[WARNING] Cupo inválido para cliente '{cliente}': {row[col_cupo]}")
+        if not tercero or not email:
+            continue
 
-                dict_clientes[cliente_norm] = {
-                    "nit": str(row[col_nit]).strip() if col_nit and pd.notna(row[col_nit]) else "N/A",
-                    "cliente": str(cliente).strip(),
-                    "nombre_comercial": str(row[col_nombre_comercial]).strip() if col_nombre_comercial and pd.notna(row[col_nombre_comercial]) else "N/A",
-                    "correo_cliente": str(correo_cliente).strip(),
-                    "canal": str(row[col_canal]).strip() if col_canal and pd.notna(row[col_canal]) else "N/A",
-                    "cupo": cupo_valor
-                }
+        tercero_norm = normalizar_nombre(tercero)
+        if not tercero_norm:
+            continue
 
-        if col_vendedor and col_correo_vendedor:
-            vendedor = row[col_vendedor] if pd.notna(row[col_vendedor]) else None
-            correo_vendedor = row[col_correo_vendedor] if pd.notna(row[col_correo_vendedor]) else None
+        # Normalizar NIT (solo dígitos) para indexar por NIT
+        nit_clean = None
+        if col_nit and pd.notna(row[col_nit]):
+            try:
+                nit_clean = normalizar_nit(str(int(float(row[col_nit]))))
+            except:
+                nit_clean = normalizar_nit(str(row[col_nit]))
 
-            if vendedor and correo_vendedor:
-                vendedor_norm = normalizar_nombre(vendedor)
-                if vendedor_norm:
-                    dict_vendedores[vendedor_norm] = str(correo_vendedor).strip()
+        # Solo primera ocurrencia por nombre (primera sucursal en formato nuevo)
+        if tercero_norm not in dict_clientes:
+            cupo_valor = 0
+            if col_cupo and pd.notna(row[col_cupo]):
+                try:
+                    cupo_valor = float(row[col_cupo])
+                except:
+                    cupo_valor = 0
 
-    print(f"[INFO] Excel 1 procesado: {len(dict_clientes)} clientes, {len(dict_vendedores)} vendedores")
+            vendedor_nombre = str(row[col_vendedor]).strip() if col_vendedor and pd.notna(row[col_vendedor]) else "N/A"
+
+            entrada = {
+                "nit": nit_clean or "N/A",
+                "cliente": str(tercero).strip(),
+                "correo_cliente": str(email).strip(),
+                "vendedor": vendedor_nombre,
+                "correo_vendedor": "N/A",
+                "cupo": cupo_valor
+            }
+            dict_clientes[tercero_norm] = entrada
+
+            # Índice secundario por NIT para matching desde cartera
+            if nit_clean:
+                dict_clientes[f"__nit__{nit_clean}"] = entrada
+
+        # Vendedores con correo (formato antiguo)
+        if col_correo_vendedor:
+            vendedor = row[col_vendedor] if col_vendedor and pd.notna(row[col_vendedor]) else None
+            correo_v = row[col_correo_vendedor] if pd.notna(row[col_correo_vendedor]) else None
+            if vendedor and correo_v:
+                vend_norm = normalizar_nombre(vendedor)
+                if vend_norm:
+                    dict_vendedores[vend_norm] = str(correo_v).strip()
+                    if tercero_norm in dict_clientes:
+                        dict_clientes[tercero_norm]["correo_vendedor"] = str(correo_v).strip()
+
+    clientes_reales = [k for k in dict_clientes if not k.startswith("__nit__")]
+    print(f"[INFO] Excel Clientes procesado: {len(clientes_reales)} clientes, {len(dict_vendedores)} vendedores con correo")
 
     return dict_clientes, dict_vendedores
 
 
 def leer_excel_cartera(archivo_bytes, dict_clientes, dict_vendedores):
-    """Lee Excel 2 (Cartera) - Procesa TODAS las facturas (vencidas, próximas y no vencidas)."""
-    # Detectar dinámicamente la fila del header
+    """Lee Excel de Cartera. Detecta automáticamente el formato (nuevo o antiguo)."""
+    sheet = _detectar_sheet_cartera(archivo_bytes)
+    if sheet == "Informe de Vencimientos":
+        return _leer_cartera_nuevo_formato(archivo_bytes, dict_clientes, dict_vendedores)
+    elif sheet == "Cartera por edades":
+        return _leer_cartera_formato_antiguo(archivo_bytes, dict_clientes, dict_vendedores)
+    else:
+        raise ValueError(f"No se reconoce ninguna hoja de cartera en el archivo.")
+
+
+def _leer_cartera_nuevo_formato(archivo_bytes, dict_clientes, dict_vendedores):
+    """Parsea el nuevo formato de cartera: hoja 'Informe de Vencimientos'."""
     header_row = detectar_fila_header_cartera(archivo_bytes)
-    print(f"[INFO] Leyendo Excel Cartera con header en fila {header_row}")
+    print(f"[INFO] Leyendo 'Informe de Vencimientos' con header en fila {header_row}")
+    df = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Informe de Vencimientos", header=header_row)
+
+    col_cuenta     = buscar_columna_exacta(df, ["Cuenta", "cuenta"])
+    col_documento  = buscar_columna_exacta(df, ["Documento", "documento"])
+    col_fecha      = buscar_columna_exacta(df, ["Fecha", "Emision", "Emisión"])
+    col_fecha_vence= buscar_columna_exacta(df, ["Fecha Vence", "FechaVence", "Vencimiento", "Fecha Vencimiento"])
+    col_saldo      = buscar_columna_exacta(df, ["Saldo", "saldo"])
+
+    if not col_cuenta or not col_documento or not col_fecha_vence or not col_saldo:
+        raise ValueError(f"Columnas requeridas no encontradas. Columnas disponibles: {list(df.columns)}")
+
+    print(f"[INFO] Columnas cartera nuevo formato:")
+    print(f"  - Cuenta     : {col_cuenta}")
+    print(f"  - Documento  : {col_documento}")
+    print(f"  - Fecha      : {col_fecha}")
+    print(f"  - Fecha Vence: {col_fecha_vence}")
+    print(f"  - Saldo      : {col_saldo}")
+
+    recordatorios = []
+    cliente_actual = correo_cliente_actual = None
+    vendedor_actual = correo_vendedor_actual = "N/A"
+    cupo_actual = 0
+
+    sin_cliente = saldo_cero = 0
+    vencidas = proximas = no_vencidas = 0
+    hoy = date.today()
+
+    print(f"\n[DEBUG] Clientes NO identificados en Excel Clientes:")
+    print("-" * 80)
+
+    for _, row in df.iterrows():
+        cuenta_val = row[col_cuenta] if pd.notna(row[col_cuenta]) else None
+        if cuenta_val is None:
+            continue
+
+        cuenta_str = str(cuenta_val).strip()
+
+        # --- Fila de cabecera de cliente: contiene "NIT." ---
+        if "NIT." in cuenta_str.upper():
+            idx_nit = cuenta_str.upper().find("NIT.")
+            nombre_original = cuenta_str[:idx_nit].rstrip(" -").strip()
+            nit_part = cuenta_str[idx_nit + 4:]
+            nit_raw = normalizar_nit(nit_part.split(" ")[0].split("-")[0])
+
+            nombre_norm = normalizar_nombre(nombre_original)
+            nit_key = f"__nit__{nit_raw}" if nit_raw else None
+
+            cliente_info = None
+            if nit_key and nit_key in dict_clientes:
+                cliente_info = dict_clientes[nit_key]
+            elif nombre_norm in dict_clientes:
+                cliente_info = dict_clientes[nombre_norm]
+            else:
+                sin_cliente += 1
+                print(f"  [{sin_cliente}] NO ENCONTRADO: '{nombre_original}' (NIT: {nit_raw})")
+
+            if cliente_info:
+                cliente_actual        = cliente_info["cliente"]
+                correo_cliente_actual = cliente_info["correo_cliente"]
+                vendedor_actual       = cliente_info.get("vendedor", "N/A")
+                correo_vendedor_actual= cliente_info.get("correo_vendedor", "N/A")
+                cupo_actual           = cliente_info.get("cupo", 0)
+            else:
+                cliente_actual = correo_cliente_actual = None
+            continue
+
+        # --- Fila de TOTAL: "TOTAL:" en la columna Fecha Vence ---
+        fecha_vence_val = row[col_fecha_vence] if pd.notna(row[col_fecha_vence]) else None
+        if fecha_vence_val and "total" in str(fecha_vence_val).lower():
+            continue
+
+        if not cliente_actual or not correo_cliente_actual:
+            continue
+
+        # --- Fila de movimiento ---
+        documento = row[col_documento] if pd.notna(row[col_documento]) else None
+        if not documento:
+            continue
+
+        saldo = row[col_saldo] if pd.notna(row[col_saldo]) else 0
+        try:
+            saldo_float = float(saldo)
+            if saldo_float <= 0:
+                saldo_cero += 1
+                continue
+        except:
+            continue
+
+        if not fecha_vence_val:
+            continue
+
+        try:
+            vencimiento_date = pd.to_datetime(fecha_vence_val).date()
+            dias = (vencimiento_date - hoy).days
+        except:
+            continue
+
+        fecha_emision_val = row[col_fecha] if col_fecha and pd.notna(row[col_fecha]) else None
+        try:
+            emision_str = pd.to_datetime(fecha_emision_val).strftime("%d/%m/%Y") if fecha_emision_val else "N/A"
+        except:
+            emision_str = "N/A"
+
+        saldo_formateado = f"${saldo_float:,.0f}"
+
+        if dias < 0:
+            estado = "vencido";    badge_class = "badge-danger";  vencidas += 1
+        elif dias <= 5:
+            estado = "proximo";    badge_class = "badge-warning"; proximas += 1
+        else:
+            estado = "no_vencido"; badge_class = "badge-success"; no_vencidas += 1
+
+        recordatorios.append({
+            "cliente":           cliente_actual,
+            "correo_cliente":    correo_cliente_actual,
+            "vendedor":          vendedor_actual,
+            "correo_vendedor":   correo_vendedor_actual,
+            "local":             "N/A",
+            "numero_factura":    str(documento),
+            "fecha_emision":     emision_str,
+            "fecha_vencimiento": vencimiento_date.strftime("%d/%m/%Y"),
+            "dias":              dias,
+            "saldo":             saldo_formateado,
+            "saldo_numerico":    saldo_float,
+            "estado":            estado,
+            "badge_class":       badge_class,
+            "cupo":              cupo_actual
+        })
+
+    print("-" * 80)
+    print(f"\n[INFO] Cartera (nuevo formato) procesada:")
+    print(f"  - Total recordatorios: {len(recordatorios)}")
+    print(f"    • Vencidas: {vencidas} | Próximas: {proximas} | No vencidas: {no_vencidas}")
+    print(f"  - Sin cliente: {sin_cliente} | Saldo cero/negativo: {saldo_cero}")
+    return recordatorios
+
+
+def _leer_cartera_formato_antiguo(archivo_bytes, dict_clientes, dict_vendedores):
+    """Lee el formato antiguo de cartera: hoja 'Cartera por edades'."""
+    header_row = detectar_fila_header_cartera(archivo_bytes)
+    print(f"[INFO] Leyendo Excel Cartera (formato antiguo) con header en fila {header_row}")
     df = pd.read_excel(BytesIO(archivo_bytes), sheet_name="Cartera por edades", header=header_row)
 
     col_nombre_tercero = buscar_columna_exacta(df, ["Nombre tercero", "Nombretercero", "Cliente"])
@@ -562,82 +777,50 @@ def leer_excel_cartera(archivo_bytes, dict_clientes, dict_vendedores):
 # ==========================================
 
 
-def crear_mensaje_email(destinatario_principal, destinatario_cc, asunto, cuerpo_html, cuerpo_texto=None):
-    """Crea un mensaje de email en formato MIME con CC."""
-    mensaje = MIMEMultipart("alternative")
-    mensaje["Subject"] = asunto
-    mensaje["From"] = f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>"
-    mensaje["To"] = destinatario_principal
-    
-    if destinatario_cc:
-        mensaje["Cc"] = destinatario_cc
-    
-    if cuerpo_texto:
-        parte_texto = MIMEText(cuerpo_texto, "plain", "utf-8")
-        mensaje.attach(parte_texto)
-    
-    parte_html = MIMEText(cuerpo_html, "html", "utf-8")
-    mensaje.attach(parte_html)
-    
-    return mensaje
-
-
 def enviar_email_individual(destinatario_principal, destinatario_cc, asunto, cuerpo_html, cuerpo_texto=None):
-    """Envía un correo electrónico individual con CC opcional."""
+    """Envía un correo electrónico individual con CC opcional via Resend."""
     try:
-        if not EMAIL_USER or not EMAIL_PASSWORD:
+        if not RESEND_API_KEY:
             return {
                 "success": False,
                 "destinatario": destinatario_principal,
-                "error": "Credenciales de correo no configuradas. Revisa el archivo .env"
+                "error": "RESEND_API_KEY no configurada. Revisa el archivo .env"
             }
-        
+
         if not destinatario_principal or "@" not in destinatario_principal:
             return {
                 "success": False,
                 "destinatario": destinatario_principal,
                 "error": "Email de destinatario principal inválido"
             }
-        
-        mensaje = crear_mensaje_email(destinatario_principal, destinatario_cc, asunto, cuerpo_html, cuerpo_texto)
-        
-        destinatarios = [destinatario_principal]
+
+        params: resend.Emails.SendParams = {
+            "from": f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>",
+            "to": [destinatario_principal],
+            "subject": asunto,
+            "html": cuerpo_html,
+        }
+
         if destinatario_cc and "@" in destinatario_cc:
-            destinatarios.append(destinatario_cc)
-        
-        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT, timeout=30) as server:
-            server.ehlo()
-            server.starttls()  
-            server.ehlo()
-            server.login(EMAIL_USER, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_FROM_ADDRESS, destinatarios, mensaje.as_string())
-        
+            params["cc"] = [destinatario_cc]
+
+        if cuerpo_texto:
+            params["text"] = cuerpo_texto
+
+        resend.Emails.send(params)
+
         return {
             "success": True,
             "destinatario": destinatario_principal,
             "destinatario_cc": destinatario_cc,
             "error": None
         }
-    
-    except smtplib.SMTPAuthenticationError:
-        return {
-            "success": False,
-            "destinatario": destinatario_principal,
-            "error": "Error de autenticación SMTP. Verifica tu correo y contraseña de aplicación."
-        }
-    
-    except smtplib.SMTPException as e:
-        return {
-            "success": False,
-            "destinatario": destinatario_principal,
-            "error": f"Error SMTP: {str(e)}"
-        }
-    
+
     except Exception as e:
         return {
             "success": False,
             "destinatario": destinatario_principal,
-            "error": f"Error inesperado: {str(e)}"
+            "error": f"Error al enviar: {str(e)}"
         }
 
 
@@ -939,23 +1122,23 @@ def index():
 
 @app.route("/test-email", methods=["GET"])
 def test_email():
-    """Prueba la configuración SMTP enviando un correo de prueba."""
+    """Prueba la configuración de Resend enviando un correo de prueba."""
     try:
-        if not EMAIL_USER or not EMAIL_PASSWORD:
+        if not RESEND_API_KEY:
             return jsonify({
                 "success": False,
-                "message": "Credenciales de correo no configuradas",
-                "detalles": "Debes configurar EMAIL_USER y EMAIL_PASSWORD en el archivo .env"
+                "message": "RESEND_API_KEY no configurada",
+                "detalles": "Debes configurar RESEND_API_KEY en el archivo .env"
             }), 400
-        
-        email_prueba = EMAIL_USER
-        asunto = "Prueba de Configuración SMTP - Cartera Lomarosa"
-        
+
+        destinatario_prueba = EMAIL_FROM_ADDRESS
+        asunto = "Prueba de Configuración Resend - Cartera Lomarosa"
+
         cuerpo_html = """
         <html>
             <body style="font-family: Arial, sans-serif; padding: 20px;">
-                <h2 style="color: #667eea;">✅ Configuración SMTP Exitosa</h2>
-                <p>Si estás leyendo este correo, significa que tu configuración SMTP está funcionando correctamente.</p>
+                <h2 style="color: #667eea;">✅ Configuración Resend Exitosa</h2>
+                <p>Si estás leyendo este correo, significa que Resend está funcionando correctamente desde <strong>cartera@grupolom.com</strong>.</p>
                 <hr>
                 <p style="color: #666; font-size: 12px;">
                     Sistema de Recordatorios de Pago - Cartera Lomarosa
@@ -963,26 +1146,21 @@ def test_email():
             </body>
         </html>
         """
-        
-        cuerpo_texto = "✅ Configuración SMTP Exitosa\n\nSi estás leyendo este correo, significa que tu configuración SMTP está funcionando correctamente."
-        
+
         resultado = enviar_email_individual(
-            destinatario_principal=email_prueba,
+            destinatario_principal=destinatario_prueba,
             destinatario_cc=None,
             asunto=asunto,
-            cuerpo_html=cuerpo_html,
-            cuerpo_texto=cuerpo_texto
+            cuerpo_html=cuerpo_html
         )
-        
+
         if resultado["success"]:
             return jsonify({
                 "success": True,
-                "message": f"Correo de prueba enviado exitosamente a {email_prueba}",
+                "message": f"Correo de prueba enviado exitosamente a {destinatario_prueba}",
                 "detalles": {
-                    "servidor": EMAIL_HOST,
-                    "puerto": EMAIL_PORT,
-                    "usuario": EMAIL_USER,
-                    "destinatario": email_prueba
+                    "remitente": f"{EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>",
+                    "destinatario": destinatario_prueba
                 }
             })
         else:
@@ -991,11 +1169,11 @@ def test_email():
                 "message": "Error al enviar correo de prueba",
                 "error": resultado["error"]
             }), 500
-    
+
     except Exception as e:
         return jsonify({
             "success": False,
-            "message": "Error al probar configuración SMTP",
+            "message": "Error al probar configuración Resend",
             "error": str(e)
         }), 500
 
@@ -1034,11 +1212,15 @@ def procesar_excel():
             debug_log.append(f"Archivo1_clientes: ERROR - {str(e)}")
 
         try:
-            # Probar si es archivo de cartera (con hoja específica y header dinámico)
-            header_row_1 = detectar_fila_header_cartera(contenido1)
-            df1_cartera = pd.read_excel(BytesIO(contenido1), sheet_name="Cartera por edades", header=header_row_1)
-            tipo1_cartera = detectar_tipo_excel(df1_cartera, f"(Archivo 1 como CARTERA, header={header_row_1})")
-            debug_log.append(f"Archivo1_cartera: {tipo1_cartera}, header={header_row_1}, cols={list(df1_cartera.columns)[:5]}")
+            sheet1_cartera = _detectar_sheet_cartera(contenido1)
+            if sheet1_cartera:
+                header_row_1 = detectar_fila_header_cartera(contenido1)
+                df1_cartera = pd.read_excel(BytesIO(contenido1), sheet_name=sheet1_cartera, header=header_row_1)
+                tipo1_cartera = detectar_tipo_excel(df1_cartera, f"(Archivo 1 como CARTERA, hoja='{sheet1_cartera}')")
+                debug_log.append(f"Archivo1_cartera: {tipo1_cartera}, hoja={sheet1_cartera}, cols={list(df1_cartera.columns)[:5]}")
+            else:
+                tipo1_cartera = None
+                debug_log.append("Archivo1_cartera: sin hoja de cartera reconocida")
         except Exception as e:
             tipo1_cartera = None
             debug_log.append(f"Archivo1_cartera: ERROR - {str(e)}")
@@ -1053,11 +1235,15 @@ def procesar_excel():
             debug_log.append(f"Archivo2_clientes: ERROR - {str(e)}")
 
         try:
-            # Probar si es archivo de cartera (con hoja específica y header dinámico)
-            header_row_2 = detectar_fila_header_cartera(contenido2)
-            df2_cartera = pd.read_excel(BytesIO(contenido2), sheet_name="Cartera por edades", header=header_row_2)
-            tipo2_cartera = detectar_tipo_excel(df2_cartera, f"(Archivo 2 como CARTERA, header={header_row_2})")
-            debug_log.append(f"Archivo2_cartera: {tipo2_cartera}, header={header_row_2}, cols={list(df2_cartera.columns)[:5]}")
+            sheet2_cartera = _detectar_sheet_cartera(contenido2)
+            if sheet2_cartera:
+                header_row_2 = detectar_fila_header_cartera(contenido2)
+                df2_cartera = pd.read_excel(BytesIO(contenido2), sheet_name=sheet2_cartera, header=header_row_2)
+                tipo2_cartera = detectar_tipo_excel(df2_cartera, f"(Archivo 2 como CARTERA, hoja='{sheet2_cartera}')")
+                debug_log.append(f"Archivo2_cartera: {tipo2_cartera}, hoja={sheet2_cartera}, cols={list(df2_cartera.columns)[:5]}")
+            else:
+                tipo2_cartera = None
+                debug_log.append("Archivo2_cartera: sin hoja de cartera reconocida")
         except Exception as e:
             tipo2_cartera = None
             debug_log.append(f"Archivo2_cartera: ERROR - {str(e)}")
@@ -1175,10 +1361,10 @@ def enviar_correos():
                 "message": "Lista vacía"
             }), 400
 
-        if not EMAIL_USER or not EMAIL_PASSWORD:
+        if not RESEND_API_KEY:
             return jsonify({
                 "success": False,
-                "message": "Credenciales no configuradas"
+                "message": "RESEND_API_KEY no configurada en .env"
             }), 500
 
         # ← AGRUPAR por cliente + email (UN SOLO correo por cliente)
@@ -1226,8 +1412,9 @@ if __name__ == "__main__":
     print("Sistema de Recordatorios de Pago - Cartera Lomarosa")
     print("=" * 60)
     print(f"Servidor iniciado en: http://localhost:5000")
-    print(f"Configuración SMTP: {EMAIL_HOST}:{EMAIL_PORT}")
-    print(f"Usuario de correo: {EMAIL_USER if EMAIL_USER else '❌ NO CONFIGURADO'}")
+    print(f"Proveedor de correo: Resend API")
+    print(f"Remitente: {EMAIL_FROM_NAME} <{EMAIL_FROM_ADDRESS}>")
+    print(f"API Key: {'[OK] Configurada' if RESEND_API_KEY else '[FALTA] NO CONFIGURADA (revisa .env)'}")
     print("=" * 60)
     print("\nPresiona Ctrl+C para detener el servidor.\n")
     
