@@ -8,6 +8,8 @@ let recordatoriosGlobal = [];
 let clientesAgrupados = [];
 let fechaCarteraGlobal = null;
 let infoCierreGlobal = null;
+let enviados_log = [];
+let ciclo_log = null;
 
 // ==========================================
 // UTILIDADES
@@ -199,6 +201,66 @@ function agruparPorCliente(recordatorios) {
 }
 
 // ==========================================
+// SISTEMA DE TANDAS (LOG DE ENVIADOS)
+// ==========================================
+
+async function cargarLogEnviados() {
+  try {
+    const resp = await fetch('/log-enviados');
+    const data = await resp.json();
+    enviados_log = data.enviados || [];
+    ciclo_log = data.ciclo;
+    actualizarBannerCiclo();
+  } catch(e) {
+    enviados_log = [];
+  }
+}
+
+function actualizarBannerCiclo() {
+  const banner = document.getElementById('banner-ciclo');
+  if (!banner) return;
+
+  const clientesUnicos = clientesAgrupados ? clientesAgrupados.length : 0;
+  const yaEnviados = clientesAgrupados ? clientesAgrupados.filter(c => enviados_log.includes(c.correo_cliente)).length : 0;
+  const pendientes = clientesUnicos - yaEnviados;
+
+  document.getElementById('ciclo-actual').textContent = ciclo_log || '';
+  document.getElementById('ya-enviados').textContent = yaEnviados;
+  document.getElementById('pendientes-count').textContent = pendientes;
+  banner.style.display = yaEnviados > 0 ? 'flex' : 'none';
+}
+
+function seleccionarPendientes() {
+  const limite = parseInt(document.getElementById('limite-tanda').value) || 90;
+  const checkboxes = document.querySelectorAll('.check-cliente');
+  let seleccionados = 0;
+
+  // Primero desmarcar todos
+  checkboxes.forEach(cb => {
+    cb.checked = false;
+    cb.disabled = false;
+  });
+
+  // Marcar solo pendientes hasta el límite
+  checkboxes.forEach(cb => {
+    const email = cb.dataset.email;
+    if (!enviados_log.includes(email) && seleccionados < limite) {
+      cb.checked = true;
+      seleccionados++;
+    }
+  });
+
+  actualizarConteoEnvio();
+}
+
+async function resetearCiclo() {
+  if (!confirm('¿Iniciar un nuevo ciclo? Esto borrará el historial de enviados del ciclo actual.')) return;
+  await fetch('/reset-log', { method: 'POST' });
+  await cargarLogEnviados();
+  renderTablaUnificada();
+}
+
+// ==========================================
 // ANALIZAR ARCHIVOS
 // ==========================================
 
@@ -259,6 +321,9 @@ async function analizarArchivos() {
 
         document.getElementById("step2").scrollIntoView({ behavior: "smooth" });
 
+        // Cargar log de enviados y actualizar banner de ciclo
+        await cargarLogEnviados();
+
         btnAnalizar.textContent = "Analizar Archivos";
         btnAnalizar.disabled = false;
 
@@ -287,20 +352,27 @@ function renderTablaUnificada() {
 
     filtrados.forEach((cliente, idx) => {
         const uniqueKey = `${cliente.cliente}|${cliente.correo_cliente}`;
+        const yaEnviado = enviados_log.includes(cliente.correo_cliente);
 
         // Formatear montos
         const totalCarteraFormat = `$${cliente.total_saldo.toLocaleString('es-CO', {maximumFractionDigits: 0})}`;
         const cupoDisponibleFormat = `$${cliente.cupo_disponible.toLocaleString('es-CO', {maximumFractionDigits: 0})}`;
         const cupoDisponibleColor = cliente.cupo_disponible < 0 ? '#dc2626' : '#10b981';
 
+        const badgeEnviado = yaEnviado
+            ? `<span style="background:#dcfce7; color:#16a34a; font-size:11px; font-weight:bold; padding:2px 7px; border-radius:999px; margin-left:6px; vertical-align:middle;">Enviado</span>`
+            : '';
+
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td>
-                <input type="checkbox" class="check-cliente" value="${uniqueKey}"
+                <input type="checkbox" class="check-cliente cliente-checkbox" value="${uniqueKey}"
                        data-cliente="${cliente.cliente}"
-                       data-email="${cliente.correo_cliente}" checked>
+                       data-email="${cliente.correo_cliente}"
+                       ${yaEnviado ? '' : 'checked'}
+                       ${yaEnviado ? 'disabled' : ''}>
             </td>
-            <td><strong>${cliente.cliente}</strong></td>
+            <td><strong>${cliente.cliente}</strong>${badgeEnviado}</td>
             <td>${cliente.correo_cliente}</td>
             <td>${cliente.vendedor}</td>
             <td style="text-align: center; font-weight: bold;">${cliente.total_facturas}</td>

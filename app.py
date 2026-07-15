@@ -1417,6 +1417,11 @@ def enviar_correos():
         exitosos = sum(1 for r in resultados if r["success"])
         fallidos = len(resultados) - exitosos
 
+        # Registrar en el log los correos enviados exitosamente
+        emails_exitosos = [r["destinatario"] for r in resultados if r["success"]]
+        if emails_exitosos:
+            guardar_log_enviados(emails_exitosos)
+
         return jsonify({
             "success": True,
             "message": f"✅ Envío completado: {len(recordatorios_agrupados)} correos unificados",
@@ -1433,6 +1438,48 @@ def enviar_correos():
         }), 500
 
 
+
+
+LOG_FILE = os.path.join(os.path.dirname(__file__), "enviados.json")
+
+def leer_log_enviados():
+    """Lee el log de clientes ya notificados en el ciclo actual."""
+    if not os.path.exists(LOG_FILE):
+        return {"ciclo": None, "enviados": []}
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"ciclo": None, "enviados": []}
+
+def guardar_log_enviados(emails_nuevos):
+    """Agrega emails al log del ciclo actual (mes/año)."""
+    ciclo_actual = date.today().strftime("%Y-%m")
+    log = leer_log_enviados()
+    # Resetear si es un ciclo nuevo
+    if log.get("ciclo") != ciclo_actual:
+        log = {"ciclo": ciclo_actual, "enviados": []}
+    for email in emails_nuevos:
+        if email not in log["enviados"]:
+            log["enviados"].append(email)
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        json.dump(log, f, ensure_ascii=False, indent=2)
+
+@app.route("/log-enviados", methods=["GET"])
+def get_log_enviados():
+    """Retorna el log de emails ya enviados en el ciclo actual."""
+    log = leer_log_enviados()
+    ciclo_actual = date.today().strftime("%Y-%m")
+    if log.get("ciclo") != ciclo_actual:
+        return jsonify({"ciclo": ciclo_actual, "enviados": [], "total": 0})
+    return jsonify({"ciclo": log["ciclo"], "enviados": log["enviados"], "total": len(log["enviados"])})
+
+@app.route("/reset-log", methods=["POST"])
+def reset_log():
+    """Resetea el log para iniciar un nuevo ciclo manualmente."""
+    if os.path.exists(LOG_FILE):
+        os.remove(LOG_FILE)
+    return jsonify({"success": True, "message": "Log de enviados reiniciado."})
 
 
 def abrir_navegador():
